@@ -2,8 +2,12 @@
 // Supabase Auth still needs an email internally, so we deterministically map a
 // login name to a hidden internal email. Users never see or type this.
 //
-// e.g.  "Priya Sharma" (student) -> "priya-sharma@students.tuition.local"
-//       "Mom" (teacher)          -> "mom@teachers.tuition.local"
+// We use subdomains of example.com — an IANA-reserved domain that always passes
+// Supabase's email validation but can never receive real mail. (A made-up TLD
+// like ".local" is rejected as invalid, which is why we avoid it.)
+//
+// e.g.  "Priya Sharma" (student) -> "priya-sharma@student.example.com"
+//       "Mom" (teacher)          -> "mom@teacher.example.com"
 
 // Turn a display name into a URL/email-safe login slug.
 export function toUsername(name) {
@@ -18,7 +22,7 @@ export function toUsername(name) {
 // Map a login name + role to the hidden internal email.
 export function nameToEmail(name, role) {
   const slug = toUsername(name)
-  const domain = role === 'teacher' ? 'teachers.tuition.local' : 'students.tuition.local'
+  const domain = role === 'teacher' ? 'teacher.example.com' : 'student.example.com'
   return `${slug}@${domain}`
 }
 
