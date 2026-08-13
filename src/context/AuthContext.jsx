@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, useCallback } from 'react'
 import { supabase, isConfigured } from '../lib/supabase'
+import { nameToEmail } from '../lib/username'
 
 const AuthContext = createContext(null)
 
@@ -45,16 +46,22 @@ export function AuthProvider({ children }) {
     }
   }, [loadProfile])
 
-  const signUp = async ({ email, password, fullName, role }) => {
+  // Sign up with just a name + password. The name is mapped to a hidden
+  // internal email so users never deal with email at all.
+  const signUp = async ({ fullName, password, role }) => {
+    const email = nameToEmail(fullName, role)
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
-      options: { data: { full_name: fullName, role } },
+      options: { data: { full_name: fullName.trim(), role } },
     })
     return { data, error }
   }
 
-  const signIn = async ({ email, password }) => {
+  // Sign in with name + password. We must know whether it's a teacher or
+  // student to reconstruct the hidden email, so the login form passes the role.
+  const signIn = async ({ fullName, password, role }) => {
+    const email = nameToEmail(fullName, role)
     const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password,

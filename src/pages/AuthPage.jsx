@@ -2,38 +2,60 @@ import { useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { Spinner } from '../components/ui'
 import { Icon } from '../components/icons'
+import { isValidUsername, toUsername } from '../lib/username'
 
 export default function AuthPage() {
   const { signIn, signUp } = useAuth()
   const [mode, setMode] = useState('signin') // 'signin' | 'signup'
   const [role, setRole] = useState('student')
   const [fullName, setFullName] = useState('')
-  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [notice, setNotice] = useState('')
+
+  const friendlyError = (raw, ctx) => {
+    const m = (raw || '').toLowerCase()
+    if (ctx === 'signup' && (m.includes('already') || m.includes('registered') || m.includes('exists')))
+      return `The name "${fullName.trim()}" is already taken. Try adding a number, e.g. "${fullName.trim()} 2".`
+    if (ctx === 'signin' && m.includes('invalid'))
+      return 'That name and password don’t match. Check the spelling, or the type (student / teacher).'
+    if (m.includes('password') && m.includes('6'))
+      return 'Password must be at least 6 characters.'
+    return raw || 'Something went wrong. Please try again.'
+  }
 
   const submit = async (e) => {
     e.preventDefault()
     setError('')
-    setNotice('')
+
+    if (!isValidUsername(fullName)) {
+      setError('Please enter a name (at least 2 letters).')
+      return
+    }
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters.')
+      return
+    }
+
     setBusy(true)
     try {
       if (mode === 'signin') {
-        const { error } = await signIn({ email, password })
-        if (error) setError(error.message)
+        const { error } = await signIn({ fullName, password, role })
+        if (error) setError(friendlyError(error.message, 'signin'))
       } else {
-        const { data, error } = await signUp({ email, password, fullName, role })
+        const { data, error } = await signUp({ fullName, password, role })
         if (error) {
-          setError(error.message)
+          setError(friendlyError(error.message, 'signup'))
         } else if (data?.user && !data.session) {
-          setNotice(
-            'Account created. Check your email to confirm, then sign in. ' +
-              '(If email confirmation is off in Supabase, just sign in now.)'
+          // Email confirmation is still ON in Supabase — the account was made
+          // but not signed in. Since we use fake internal emails, that link is
+          // never received. Tell the owner exactly how to fix it, one time.
+          setError(
+            'Almost! Turn OFF “Confirm email” in Supabase → Authentication → ' +
+              'Providers → Email, then create the account again. (One-time setting.)'
           )
-          setMode('signin')
         }
+        // On success the auth listener signs them straight in — no email step.
       }
     } finally {
       setBusy(false)
@@ -91,59 +113,52 @@ export default function AuthPage() {
           </h2>
           <p className="mt-1 text-sm text-ink-500">
             {mode === 'signin'
-              ? 'Sign in to your dashboard.'
-              : 'Set up a teacher or student account.'}
+              ? 'Enter your name and password to sign in.'
+              : 'Just pick a name and password — that’s it.'}
           </p>
 
           <form onSubmit={submit} className="mt-6 space-y-4">
-            {mode === 'signup' && (
-              <>
-                <div>
-                  <label className="label">Full name</label>
-                  <input
-                    className="input"
-                    value={fullName}
-                    onChange={(e) => setFullName(e.target.value)}
-                    placeholder="e.g. Priya Sharma"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="label">I am a…</label>
-                  <div className="grid grid-cols-2 gap-2">
-                    {[
-                      { v: 'student', label: 'Student' },
-                      { v: 'teacher', label: 'Teacher (admin)' },
-                    ].map((o) => (
-                      <button
-                        type="button"
-                        key={o.v}
-                        onClick={() => setRole(o.v)}
-                        className={`rounded-lg border px-3 py-2 text-sm font-medium transition ${
-                          role === o.v
-                            ? 'border-brand-500 bg-brand-50 text-brand-700'
-                            : 'border-ink-200 text-ink-600 hover:bg-ink-50'
-                        }`}
-                      >
-                        {o.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </>
-            )}
+            {/* Role selector — needed for both sign in and sign up */}
+            <div>
+              <label className="label">I am a…</label>
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  { v: 'student', label: 'Student' },
+                  { v: 'teacher', label: 'Teacher' },
+                ].map((o) => (
+                  <button
+                    type="button"
+                    key={o.v}
+                    onClick={() => setRole(o.v)}
+                    className={`rounded-lg border px-3 py-2 text-sm font-medium transition ${
+                      role === o.v
+                        ? 'border-brand-500 bg-brand-50 text-brand-700'
+                        : 'border-ink-200 text-ink-600 hover:bg-ink-50'
+                    }`}
+                  >
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+            </div>
 
             <div>
-              <label className="label">Email</label>
+              <label className="label">Name</label>
               <input
                 className="input"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+                placeholder="e.g. Priya Sharma"
+                autoFocus
                 required
               />
+              {mode === 'signup' && fullName.trim() && (
+                <p className="mt-1 text-xs text-ink-400">
+                  Your login name will be “{toUsername(fullName)}”.
+                </p>
+              )}
             </div>
+
             <div>
               <label className="label">Password</label>
               <input
@@ -151,7 +166,7 @@ export default function AuthPage() {
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
+                placeholder="At least 6 characters"
                 minLength={6}
                 required
               />
@@ -160,11 +175,6 @@ export default function AuthPage() {
             {error && (
               <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
                 {error}
-              </div>
-            )}
-            {notice && (
-              <div className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-                {notice}
               </div>
             )}
 
@@ -180,7 +190,6 @@ export default function AuthPage() {
               onClick={() => {
                 setMode(mode === 'signin' ? 'signup' : 'signin')
                 setError('')
-                setNotice('')
               }}
               className="font-semibold text-brand-600 hover:text-brand-700"
             >

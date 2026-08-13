@@ -41,8 +41,9 @@ Go to [supabase.com](https://supabase.com) → **New project**. Once ready, open
 [`supabase/schema.sql`](supabase/schema.sql), and click **Run**. This creates all
 tables, the storage bucket, and the security rules.
 
-> Tip: In **Authentication → Providers → Email**, you can turn *off*
-> "Confirm email" while testing so accounts work immediately.
+> **Required for the simple name-only login:** In **Authentication → Providers
+> → Email**, turn **OFF** "Confirm email". Users sign up with just a name and
+> password and are logged straight in — no email is ever asked for or sent.
 
 ### 2. Get your keys
 In Supabase → **Settings → API**, copy:
@@ -57,9 +58,14 @@ npm run dev                # http://localhost:5173
 ```
 
 ### 4. First login (create the teacher account)
-Sign up choosing **Teacher (admin)** — that's your mom's account. Everyone else
-signs up as **Student**.
+On the sign-up screen just pick **Teacher**, type your mom's **name** and a
+**password**, and you're in. Everyone else picks **Student** and does the same.
+No email, no confirmation.
 
+> Names are unique per type. If a name is already taken, the app asks you to add
+> a number (e.g. "Rahul 2"). Behind the scenes each name maps to a hidden
+> internal login — users never see it.
+>
 > Want to be certain an account is a teacher? In Supabase → **Table editor →
 > `profiles`**, set that user's `role` to `teacher`.
 
@@ -78,8 +84,8 @@ signs up as **Student**.
    ```
 5. Deploy. The health check is at `/healthz`.
 
-The server reads those variables at runtime and hands the browser the public
-config via `/config.js`, so you can change environments without rebuilding.
+The server reads those variables at runtime and injects the public config into
+the page, so you can change environments without rebuilding.
 
 ---
 
