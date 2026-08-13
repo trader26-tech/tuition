@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
+import { api } from '../lib/api'
 import { useAuth } from '../context/AuthContext'
 import { Icon } from '../components/icons'
 import { Spinner, Badge, EmptyState } from '../components/ui'
-import { buildPath, uploadSubmissionFile, removeFile } from '../lib/storage'
 import { dueLabel, fmtDateTime, relative } from '../lib/format'
 
 const ACCEPT = '.pdf,image/*'
@@ -17,29 +16,21 @@ export default function AssignmentDetail() {
   const [loading, setLoading] = useState(true)
   const [assignment, setAssignment] = useState(null)
   const [submissions, setSubmissions] = useState([])
-  const [profilesById, setProfilesById] = useState({})
 
   const load = async () => {
     setLoading(true)
-    const { data: a } = await supabase.from('assignments').select('*').eq('id', id).maybeSingle()
-    setAssignment(a || null)
-
-    const { data: subs } = await supabase
-      .from('submissions')
-      .select('*')
-      .eq('assignment_id', id)
-      .order('submitted_at', { ascending: false })
-    setSubmissions(subs || [])
-
-    // Fetch student names for teacher view.
-    const ids = [...new Set((subs || []).map((s) => s.student_id))]
-    if (ids.length) {
-      const { data: profs } = await supabase.from('profiles').select('id, full_name').in('id', ids)
-      const map = {}
-      ;(profs || []).forEach((p) => (map[p.id] = p))
-      setProfilesById(map)
+    try {
+      const [a, subs] = await Promise.all([
+        api.get(`/assignments/${id}`),
+        api.get(`/assignments/${id}/submissions`),
+      ])
+      setAssignment(a)
+      setSubmissions(subs || [])
+    } catch {
+      setAssignment(null)
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }
 
   useEffect(() => {
@@ -99,17 +90,9 @@ export default function AssignmentDetail() {
       </div>
 
       {isTeacher ? (
-        <TeacherSubmissions
-          assignment={assignment}
-          submissions={submissions}
-          profilesById={profilesById}
-        />
+        <TeacherSubmissions assignment={assignment} submissions={submissions} />
       ) : (
-        <StudentSubmission
-          assignment={assignment}
-          submission={mySubmission}
-          onChanged={load}
-        />
+        <StudentSubmission assignment={assignment} submission={mySubmission} onChanged={load} />
       )}
     </div>
   )
@@ -120,7 +103,7 @@ function DeleteAssignmentButton({ id, onDeleted }) {
   const del = async () => {
     if (!confirm('Delete this assignment and all its submissions? This cannot be undone.')) return
     setBusy(true)
-    await supabase.from('assignments').delete().eq('id', id)
+    await api.del(`/assignments/${id}`)
     onDeleted()
   }
   return (
@@ -131,7 +114,7 @@ function DeleteAssignmentButton({ id, onDeleted }) {
 }
 
 /* ─────────────── Teacher: list of all submissions ─────────────── */
-function TeacherSubmissions({ assignment, submissions, profilesById }) {
+function TeacherSubmissions({ assignment, submissions }) {
   return (
     <div>
       <div className="mb-3 flex items-center justify-between">
@@ -146,7 +129,7 @@ function TeacherSubmissions({ assignment, submissions, profilesById }) {
       ) : (
         <div className="card divide-y divide-ink-100">
           {submissions.map((s) => {
-            const name = profilesById[s.student_id]?.full_name || 'Student'
+            const name = s.student?.full_name || 'Student'
             return (
               <div key={s.id} className="flex flex-wrap items-center gap-4 p-4">
                 <div className="flex h-10 w-10 items-center justify-center rounded-full bg-brand-100 text-sm font-semibold text-brand-700">
@@ -169,10 +152,7 @@ function TeacherSubmissions({ assignment, submissions, profilesById }) {
                 ) : (
                   <Badge tone="amber">Needs grading</Badge>
                 )}
-                <Link
-                  to={`/assignments/${assignment.id}/grade/${s.id}`}
-                  className="btn-primary"
-                >
+                <Link to={`/assignments/${assignment.id}/grade/${s.id}`} className="btn-primary">
                   <Icon.Pen width={16} />
                   {s.status === 'graded' ? 'Review' : 'Grade'}
                 </Link>
@@ -187,7 +167,6 @@ function TeacherSubmissions({ assignment, submissions, profilesById }) {
 
 /* ─────────────── Student: upload / view own submission ─────────────── */
 function StudentSubmission({ assignment, submission, onChanged }) {
-  const { user } = useAuth()
   const fileRef = useRef(null)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState('')
@@ -199,30 +178,9 @@ function StudentSubmission({ assignment, submission, onChanged }) {
     setError('')
     setUploading(true)
     try {
-      const path = buildPath(user.id, assignment.id, file.name)
-      const { error: upErr } = await uploadSubmissionFile(path, file)
-      if (upErr) throw upErr
-
-      // Remove the old file if replacing.
-      if (submission?.file_path && submission.file_path !== path) {
-        await removeFile(submission.file_path).catch(() => {})
-      }
-
-      const row = {
-        assignment_id: assignment.id,
-        student_id: user.id,
-        file_path: path,
-        file_name: file.name,
-        file_type: file.type || 'application/octet-stream',
-        status: 'submitted',
-        submitted_at: new Date().toISOString(),
-      }
-
-      const { error: dbErr } = await supabase
-        .from('submissions')
-        .upsert(row, { onConflict: 'assignment_id,student_id' })
-      if (dbErr) throw dbErr
-
+      const fd = new FormData()
+      fd.append('file', file)
+      await api.upload(`/assignments/${assignment.id}/submit`, fd)
       onChanged()
     } catch (e) {
       setError(e.message || 'Upload failed')
@@ -245,9 +203,7 @@ function StudentSubmission({ assignment, submission, onChanged }) {
               <p className="truncate font-medium text-ink-800">{submission.file_name}</p>
               <p className="text-xs text-ink-400">submitted {fmtDateTime(submission.submitted_at)}</p>
             </div>
-            <Badge tone={isGraded ? 'green' : 'blue'}>
-              {isGraded ? 'Graded' : 'Submitted'}
-            </Badge>
+            <Badge tone={isGraded ? 'green' : 'blue'}>{isGraded ? 'Graded' : 'Submitted'}</Badge>
           </div>
 
           {isGraded && (
@@ -265,10 +221,7 @@ function StudentSubmission({ assignment, submission, onChanged }) {
                   {submission.feedback}
                 </p>
               )}
-              <Link
-                to={`/assignments/${assignment.id}/grade/${submission.id}`}
-                className="btn-secondary mt-3"
-              >
+              <Link to={`/assignments/${assignment.id}/grade/${submission.id}`} className="btn-secondary mt-3">
                 <Icon.Pen width={16} /> View marked paper
               </Link>
             </div>
@@ -298,11 +251,7 @@ function StudentSubmission({ assignment, submission, onChanged }) {
               </div>
             )}
             <span className="text-sm font-medium text-ink-700">
-              {uploading
-                ? 'Uploading…'
-                : submission
-                ? 'Replace your answer file'
-                : 'Upload your answer (PDF or photo)'}
+              {uploading ? 'Uploading…' : submission ? 'Replace your answer file' : 'Upload your answer (PDF or photo)'}
             </span>
             <span className="text-xs text-ink-400">PDF, JPG or PNG · one file</span>
           </button>

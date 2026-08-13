@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
+import { api } from '../lib/api'
 import { useAuth } from '../context/AuthContext'
 import { Icon } from '../components/icons'
 import { Spinner, Badge, Modal, EmptyState } from '../components/ui'
@@ -15,26 +15,28 @@ export default function Assignments() {
 
   const load = async () => {
     setLoading(true)
-    const { data: assignments } = await supabase
-      .from('assignments')
-      .select('*')
-      .order('created_at', { ascending: false })
+    try {
+      const [assignments, summary] = await Promise.all([
+        api.get('/assignments'),
+        api.get('/submissions/summary'),
+      ])
 
-    const { data: subs } = await supabase
-      .from('submissions')
-      .select('id, assignment_id, student_id, status')
+      const map = {}
+      ;(summary.all || []).forEach((s) => {
+        map[s.assignment_id] = map[s.assignment_id] || { total: 0, graded: 0, mine: null }
+        map[s.assignment_id].total += 1
+        if (s.status === 'graded') map[s.assignment_id].graded += 1
+      })
+      ;(summary.mine || []).forEach((s) => {
+        map[s.assignment_id] = map[s.assignment_id] || { total: 0, graded: 0, mine: null }
+        map[s.assignment_id].mine = s.status
+      })
 
-    const map = {}
-    ;(subs || []).forEach((s) => {
-      map[s.assignment_id] = map[s.assignment_id] || { total: 0, graded: 0, mine: null }
-      map[s.assignment_id].total += 1
-      if (s.status === 'graded') map[s.assignment_id].graded += 1
-      if (s.student_id === user?.id) map[s.assignment_id].mine = s.status
-    })
-
-    setAssignments(assignments || [])
-    setSubsByAssignment(map)
-    setLoading(false)
+      setAssignments(assignments || [])
+      setSubsByAssignment(map)
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => {
@@ -141,7 +143,6 @@ export default function Assignments() {
 }
 
 function CreateAssignmentModal({ open, onClose, onCreated }) {
-  const { user } = useAuth()
   const [form, setForm] = useState({
     title: '',
     subject: '',
@@ -158,18 +159,21 @@ function CreateAssignmentModal({ open, onClose, onCreated }) {
     e.preventDefault()
     setBusy(true)
     setError('')
-    const { error } = await supabase.from('assignments').insert({
-      title: form.title.trim(),
-      subject: form.subject.trim(),
-      description: form.description.trim(),
-      due_date: form.due_date ? new Date(form.due_date).toISOString() : null,
-      max_score: Number(form.max_score) || 100,
-      created_by: user.id,
-    })
-    setBusy(false)
-    if (error) return setError(error.message)
-    setForm({ title: '', subject: '', description: '', due_date: toLocalInput(), max_score: 100 })
-    onCreated()
+    try {
+      await api.post('/assignments', {
+        title: form.title,
+        subject: form.subject,
+        description: form.description,
+        due_date: form.due_date ? new Date(form.due_date).toISOString() : null,
+        max_score: form.max_score,
+      })
+      setForm({ title: '', subject: '', description: '', due_date: toLocalInput(), max_score: 100 })
+      onCreated()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (

@@ -5,60 +5,50 @@ import { fileURLToPath } from 'node:url'
 import fs from 'node:fs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+// Load a local .env for development (Railway injects real env vars, so this is
+// only used when a .env file is present). Minimal parser — no dependency.
+const envFile = path.join(__dirname, '..', '.env')
+if (fs.existsSync(envFile)) {
+  for (const line of fs.readFileSync(envFile, 'utf8').split('\n')) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/i)
+    if (m && !process.env[m[1]]) {
+      process.env[m[1]] = m[2].replace(/^["']|["']$/g, '')
+    }
+  }
+}
+
+// Import routers AFTER env is loaded (they read process.env at import time).
+const { default: authRouter } = await import('./auth.js')
+const { default: apiRouter } = await import('./api.js')
 const distDir = path.join(__dirname, '..', 'dist')
 const indexPath = path.join(distDir, 'index.html')
 
 const app = express()
 app.use(compression())
+app.use(express.json({ limit: '2mb' }))
 
 // Health check for Railway.
 app.get('/healthz', (_req, res) => res.status(200).send('ok'))
 
+// ─── API ───
+app.use('/api/auth', authRouter)
+app.use('/api', apiRouter)
+
+// ─── Static app ───
 if (!fs.existsSync(distDir)) {
   console.warn('[server] dist/ not found — did you run "npm run build"?')
 }
 
-// Build the runtime config <script> that exposes the PUBLIC Supabase values to
-// the browser. These are the public anon values only — never the service_role
-// key. Doing this at serve time means one build works in any environment.
-function runtimeConfigScript() {
-  const cfg = {
-    SUPABASE_URL: process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '',
-    SUPABASE_ANON_KEY:
-      process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '',
-  }
-  return `<script>window.__ENV__ = ${JSON.stringify(cfg)};</script>`
-}
+app.use(express.static(distDir, { index: false, maxAge: '1y' }))
 
-// Read index.html once at boot and cache the injected version.
-let injectedHtml = ''
-try {
-  const raw = fs.readFileSync(indexPath, 'utf8')
-  injectedHtml = raw.replace('<!--__RUNTIME_CONFIG__-->', runtimeConfigScript())
-} catch {
-  console.warn('[server] could not read dist/index.html yet')
-}
-
-// Serve hashed static assets with long cache; never cache index.html.
-app.use(
-  express.static(distDir, {
-    index: false,
-    maxAge: '1y',
-    setHeaders: (res, filePath) => {
-      if (filePath.endsWith('index.html')) {
-        res.setHeader('Cache-Control', 'no-cache')
-      }
-    },
-  })
-)
-
-// SPA fallback — always return the config-injected index.html.
+// SPA fallback for any non-API route.
 app.get('*', (_req, res) => {
-  if (!injectedHtml) {
+  if (!fs.existsSync(indexPath)) {
     return res.status(500).send('App not built. Run "npm run build".')
   }
   res.setHeader('Cache-Control', 'no-cache')
-  res.type('html').send(injectedHtml)
+  res.sendFile(indexPath)
 })
 
 const port = process.env.PORT || 3000

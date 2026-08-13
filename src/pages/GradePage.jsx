@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
+import { api } from '../lib/api'
 import { useAuth } from '../context/AuthContext'
-import { getSignedUrl } from '../lib/storage'
 import { renderPdfToImages } from '../lib/pdf'
 import AnnotationCanvas from '../components/AnnotationCanvas'
 import { Icon } from '../components/icons'
@@ -48,9 +47,9 @@ export default function GradePage() {
       setLoading(true)
       setError('')
       try {
-        const [{ data: sub }, { data: asg }] = await Promise.all([
-          supabase.from('submissions').select('*').eq('id', submissionId).maybeSingle(),
-          supabase.from('assignments').select('*').eq('id', assignmentId).maybeSingle(),
+        const [sub, asg] = await Promise.all([
+          api.get(`/submissions/${submissionId}`),
+          api.get(`/assignments/${assignmentId}`),
         ])
         if (!active) return
         if (!sub || !asg) throw new Error('Submission not found.')
@@ -60,17 +59,11 @@ export default function GradePage() {
         setAnnotations(Array.isArray(sub.annotations) ? sub.annotations : [])
         setScore(sub.score ?? '')
         setFeedback(sub.feedback ?? '')
+        setStudent(sub.student || null)
 
-        const { data: prof } = await supabase
-          .from('profiles')
-          .select('id, full_name')
-          .eq('id', sub.student_id)
-          .maybeSingle()
-        if (active) setStudent(prof)
-
-        // Fetch the file and render pages.
-        const { url, error: urlErr } = await getSignedUrl(sub.file_path, 3600)
-        if (urlErr || !url) throw new Error('Could not load the file.')
+        // Fetch the file (signed URL from our API) and render pages.
+        const { url } = await api.get(`/submissions/${submissionId}/file-url`)
+        if (!url) throw new Error('Could not load the file.')
 
         const isPdf =
           (sub.file_type || '').includes('pdf') ||
@@ -105,20 +98,20 @@ export default function GradePage() {
   const save = async (markGraded) => {
     setSaving(true)
     setError('')
-    const patch = {
-      annotations,
-      feedback,
-      score: score === '' ? null : Number(score),
+    try {
+      const updated = await api.patch(`/submissions/${submissionId}`, {
+        annotations,
+        feedback,
+        score,
+        markGraded,
+      })
+      setSavedAt(new Date())
+      setSubmission((s) => ({ ...s, ...updated }))
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSaving(false)
     }
-    if (markGraded) {
-      patch.status = 'graded'
-      patch.graded_at = new Date().toISOString()
-    }
-    const { error } = await supabase.from('submissions').update(patch).eq('id', submissionId)
-    setSaving(false)
-    if (error) return setError(error.message)
-    setSavedAt(new Date())
-    setSubmission((s) => ({ ...s, ...patch }))
   }
 
   const maxScore = assignment?.max_score ?? 100

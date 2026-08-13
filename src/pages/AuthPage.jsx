@@ -2,7 +2,14 @@ import { useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { Spinner } from '../components/ui'
 import { Icon } from '../components/icons'
-import { isValidUsername, toUsername } from '../lib/username'
+// Preview the login name the same way the server does.
+const previewUsername = (name) =>
+  (name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40)
 
 export default function AuthPage() {
   const { signIn, signUp } = useAuth()
@@ -13,22 +20,11 @@ export default function AuthPage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
-  const friendlyError = (raw, ctx) => {
-    const m = (raw || '').toLowerCase()
-    if (ctx === 'signup' && (m.includes('already') || m.includes('registered') || m.includes('exists')))
-      return `The name "${fullName.trim()}" is already taken. Try adding a number, e.g. "${fullName.trim()} 2".`
-    if (ctx === 'signin' && m.includes('invalid'))
-      return 'That name and password don’t match. Check the spelling, or the type (student / teacher).'
-    if (m.includes('password') && m.includes('6'))
-      return 'Password must be at least 6 characters.'
-    return raw || 'Something went wrong. Please try again.'
-  }
-
   const submit = async (e) => {
     e.preventDefault()
     setError('')
 
-    if (!isValidUsername(fullName)) {
+    if (previewUsername(fullName).length < 2) {
       setError('Please enter a name (at least 2 letters).')
       return
     }
@@ -39,24 +35,12 @@ export default function AuthPage() {
 
     setBusy(true)
     try {
-      if (mode === 'signin') {
-        const { error } = await signIn({ fullName, password, role })
-        if (error) setError(friendlyError(error.message, 'signin'))
-      } else {
-        const { data, error } = await signUp({ fullName, password, role })
-        if (error) {
-          setError(friendlyError(error.message, 'signup'))
-        } else if (data?.user && !data.session) {
-          // Email confirmation is still ON in Supabase — the account was made
-          // but not signed in. Since we use fake internal emails, that link is
-          // never received. Tell the owner exactly how to fix it, one time.
-          setError(
-            'Almost! Turn OFF “Confirm email” in Supabase → Authentication → ' +
-              'Providers → Email, then create the account again. (One-time setting.)'
-          )
-        }
-        // On success the auth listener signs them straight in — no email step.
-      }
+      const { error } =
+        mode === 'signin'
+          ? await signIn({ fullName, password })
+          : await signUp({ fullName, password, role })
+      // The API returns clear, friendly messages already.
+      if (error) setError(error.message)
     } finally {
       setBusy(false)
     }
@@ -118,29 +102,31 @@ export default function AuthPage() {
           </p>
 
           <form onSubmit={submit} className="mt-6 space-y-4">
-            {/* Role selector — needed for both sign in and sign up */}
-            <div>
-              <label className="label">I am a…</label>
-              <div className="grid grid-cols-2 gap-2">
-                {[
-                  { v: 'student', label: 'Student' },
-                  { v: 'teacher', label: 'Teacher' },
-                ].map((o) => (
-                  <button
-                    type="button"
-                    key={o.v}
-                    onClick={() => setRole(o.v)}
-                    className={`rounded-lg border px-3 py-2 text-sm font-medium transition ${
-                      role === o.v
-                        ? 'border-brand-500 bg-brand-50 text-brand-700'
-                        : 'border-ink-200 text-ink-600 hover:bg-ink-50'
-                    }`}
-                  >
-                    {o.label}
-                  </button>
-                ))}
+            {/* Role selector — only needed when creating an account. */}
+            {mode === 'signup' && (
+              <div>
+                <label className="label">I am a…</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { v: 'student', label: 'Student' },
+                    { v: 'teacher', label: 'Teacher' },
+                  ].map((o) => (
+                    <button
+                      type="button"
+                      key={o.v}
+                      onClick={() => setRole(o.v)}
+                      className={`rounded-lg border px-3 py-2 text-sm font-medium transition ${
+                        role === o.v
+                          ? 'border-brand-500 bg-brand-50 text-brand-700'
+                          : 'border-ink-200 text-ink-600 hover:bg-ink-50'
+                      }`}
+                    >
+                      {o.label}
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
 
             <div>
               <label className="label">Name</label>
@@ -154,7 +140,7 @@ export default function AuthPage() {
               />
               {mode === 'signup' && fullName.trim() && (
                 <p className="mt-1 text-xs text-ink-400">
-                  Your login name will be “{toUsername(fullName)}”.
+                  Your login name will be “{previewUsername(fullName)}”.
                 </p>
               )}
             </div>

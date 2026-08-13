@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
+import { api } from '../lib/api'
 import { useAuth } from '../context/AuthContext'
 import { Icon } from '../components/icons'
 import { Spinner, Badge } from '../components/ui'
@@ -37,50 +37,42 @@ export default function Dashboard() {
     let active = true
     ;(async () => {
       setLoading(true)
-      const nowIso = new Date().toISOString()
+      try {
+        const [assignments, summary, events] = await Promise.all([
+          api.get('/assignments'),
+          api.get('/submissions/summary'),
+          api.get('/schedule'),
+        ])
+        if (!active) return
 
-      const [assignmentsRes, submissionsRes, eventsRes] = await Promise.all([
-        supabase
-          .from('assignments')
-          .select('*')
-          .order('created_at', { ascending: false }),
-        supabase.from('submissions').select('id, status, score'),
-        supabase
-          .from('schedule_events')
-          .select('*')
-          .gte('starts_at', nowIso)
-          .order('starts_at', { ascending: true })
-          .limit(5),
-      ])
+        const now = Date.now()
+        const upcomingEvents = (events || [])
+          .filter((e) => new Date(e.ends_at || e.starts_at).getTime() >= now)
+          .slice(0, 5)
 
-      if (!active) return
+        if (isTeacher) {
+          const all = summary.all || []
+          setStats({
+            assignments: assignments.length,
+            submissions: all.length,
+            ungraded: all.filter((s) => s.status === 'submitted').length,
+            events: upcomingEvents.length,
+          })
+        } else {
+          const mine = summary.mine || []
+          setStats({
+            assignments: assignments.length,
+            submitted: mine.length,
+            graded: mine.filter((s) => s.status === 'graded').length,
+            events: upcomingEvents.length,
+          })
+        }
 
-      const assignments = assignmentsRes.data || []
-      const submissions = submissionsRes.data || []
-      const events = eventsRes.data || []
-
-      if (isTeacher) {
-        const ungraded = submissions.filter((s) => s.status === 'submitted').length
-        setStats({
-          assignments: assignments.length,
-          submissions: submissions.length,
-          ungraded,
-          events: events.length,
-        })
-      } else {
-        const mine = submissions // RLS already scopes to the student's own
-        const graded = mine.filter((s) => s.status === 'graded').length
-        setStats({
-          assignments: assignments.length,
-          submitted: mine.length,
-          graded,
-          events: events.length,
-        })
+        setUpcoming(upcomingEvents)
+        setRecentAssignments(assignments.slice(0, 5))
+      } finally {
+        if (active) setLoading(false)
       }
-
-      setUpcoming(events)
-      setRecentAssignments(assignments.slice(0, 5))
-      setLoading(false)
     })()
     return () => {
       active = false

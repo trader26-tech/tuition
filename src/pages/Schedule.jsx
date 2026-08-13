@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { supabase } from '../lib/supabase'
+import { api } from '../lib/api'
 import { useAuth } from '../context/AuthContext'
 import { Icon } from '../components/icons'
 import { Spinner, Badge, Modal, EmptyState } from '../components/ui'
@@ -23,35 +23,20 @@ export default function Schedule() {
   const { isTeacher } = useAuth()
   const [loading, setLoading] = useState(true)
   const [events, setEvents] = useState([])
-  const [attendeesByEvent, setAttendeesByEvent] = useState({})
   const [showCreate, setShowCreate] = useState(false)
-  const [filter, setFilter] = useState('upcoming') // 'upcoming' | 'all'
+  const [filter, setFilter] = useState('upcoming')
 
   const load = async () => {
     setLoading(true)
-    const { data: evs } = await supabase
-      .from('schedule_events')
-      .select('*')
-      .order('starts_at', { ascending: true })
-
-    const { data: att } = await supabase
-      .from('schedule_attendees')
-      .select('event_id, student_id, profiles:student_id(full_name)')
-
-    const map = {}
-    ;(att || []).forEach((a) => {
-      map[a.event_id] = map[a.event_id] || []
-      map[a.event_id].push(a.profiles?.full_name || 'Student')
-    })
-
-    setEvents(evs || [])
-    setAttendeesByEvent(map)
-    setLoading(false)
+    try {
+      setEvents((await api.get('/schedule')) || [])
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => {
     load()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const filtered = useMemo(() => {
@@ -59,7 +44,6 @@ export default function Schedule() {
     return events.filter((e) => !isPast(new Date(e.ends_at || e.starts_at)))
   }, [events, filter])
 
-  // Group by calendar day.
   const groups = useMemo(() => {
     const g = {}
     filtered.forEach((e) => {
@@ -134,17 +118,13 @@ export default function Schedule() {
                 <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-500">
                   {dayHeading(new Date(day))}
                 </h2>
-                <span className="text-xs text-ink-400">{dayEvents.length} event{dayEvents.length > 1 ? 's' : ''}</span>
+                <span className="text-xs text-ink-400">
+                  {dayEvents.length} event{dayEvents.length > 1 ? 's' : ''}
+                </span>
               </div>
               <div className="space-y-3">
                 {dayEvents.map((e) => (
-                  <EventCard
-                    key={e.id}
-                    event={e}
-                    attendees={attendeesByEvent[e.id] || []}
-                    isTeacher={isTeacher}
-                    onDeleted={load}
-                  />
+                  <EventCard key={e.id} event={e} isTeacher={isTeacher} onDeleted={load} />
                 ))}
               </div>
             </div>
@@ -164,14 +144,15 @@ export default function Schedule() {
   )
 }
 
-function EventCard({ event, attendees, isTeacher, onDeleted }) {
+function EventCard({ event, isTeacher, onDeleted }) {
   const meta = KIND_META[event.kind] || KIND_META.other
   const [busy, setBusy] = useState(false)
+  const attendees = event.attendees || []
 
   const del = async () => {
     if (!confirm('Delete this event?')) return
     setBusy(true)
-    await supabase.from('schedule_events').delete().eq('id', event.id)
+    await api.del(`/schedule/${event.id}`)
     onDeleted()
   }
 
@@ -179,9 +160,7 @@ function EventCard({ event, attendees, isTeacher, onDeleted }) {
     <div className="card flex gap-4 p-4">
       <div className="flex w-16 shrink-0 flex-col items-center justify-center rounded-lg bg-ink-50 py-2">
         <span className="text-sm font-bold text-ink-800">{fmtTime(event.starts_at)}</span>
-        {event.ends_at && (
-          <span className="text-xs text-ink-400">{fmtTime(event.ends_at)}</span>
-        )}
+        {event.ends_at && <span className="text-xs text-ink-400">{fmtTime(event.ends_at)}</span>}
       </div>
 
       <div className="min-w-0 flex-1">
@@ -201,7 +180,7 @@ function EventCard({ event, attendees, isTeacher, onDeleted }) {
         </div>
         {event.notes && <p className="mt-2 text-sm text-ink-600">{event.notes}</p>}
         {isTeacher && attendees.length > 0 && (
-          <p className="mt-2 text-xs text-ink-400">{attendees.join(', ')}</p>
+          <p className="mt-2 text-xs text-ink-400">{attendees.map((a) => a.name).join(', ')}</p>
         )}
       </div>
 
@@ -220,7 +199,6 @@ function EventCard({ event, attendees, isTeacher, onDeleted }) {
 }
 
 function CreateEventModal({ open, onClose, onCreated }) {
-  const { user } = useAuth()
   const [form, setForm] = useState({
     title: '',
     kind: 'tuition',
@@ -237,12 +215,7 @@ function CreateEventModal({ open, onClose, onCreated }) {
 
   useEffect(() => {
     if (!open) return
-    supabase
-      .from('profiles')
-      .select('id, full_name')
-      .eq('role', 'student')
-      .order('full_name')
-      .then(({ data }) => setStudents(data || []))
+    api.get('/users/students').then(setStudents).catch(() => setStudents([]))
   }, [open])
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }))
@@ -257,35 +230,25 @@ function CreateEventModal({ open, onClose, onCreated }) {
     e.preventDefault()
     setBusy(true)
     setError('')
-    const { data, error } = await supabase
-      .from('schedule_events')
-      .insert({
-        title: form.title.trim(),
+    try {
+      await api.post('/schedule', {
+        title: form.title,
         kind: form.kind,
-        subject: form.subject.trim(),
-        location: form.location.trim(),
-        notes: form.notes.trim(),
+        subject: form.subject,
+        location: form.location,
+        notes: form.notes,
         starts_at: new Date(form.starts_at).toISOString(),
         ends_at: form.ends_at ? new Date(form.ends_at).toISOString() : null,
-        created_by: user.id,
+        attendees: [...selected],
       })
-      .select()
-      .single()
-
-    if (error) {
+      setForm({ title: '', kind: 'tuition', subject: '', location: '', notes: '', starts_at: toLocalInput(), ends_at: '' })
+      setSelected(new Set())
+      onCreated()
+    } catch (err) {
+      setError(err.message)
+    } finally {
       setBusy(false)
-      return setError(error.message)
     }
-
-    if (selected.size > 0) {
-      const rows = [...selected].map((sid) => ({ event_id: data.id, student_id: sid }))
-      await supabase.from('schedule_attendees').insert(rows)
-    }
-
-    setBusy(false)
-    setForm({ title: '', kind: 'tuition', subject: '', location: '', notes: '', starts_at: toLocalInput(), ends_at: '' })
-    setSelected(new Set())
-    onCreated()
   }
 
   return (

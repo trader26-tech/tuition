@@ -6,15 +6,22 @@ right on the document** with a red pen, ticks, crosses and notes — then gives 
 score and feedback. It also has a **schedule** for planning tuitions, meetings
 and exams, and who attends.
 
-Built with **React + Vite + Tailwind**, backed by **Supabase** (auth, database,
-file storage), and served by a small **Express** server so it deploys to
-**Railway** as a single service.
+Built with **React + Vite + Tailwind** and a small **Express** API, backed by
+**Supabase** (Postgres database + file storage). Login is a simple **username +
+password** — no email, no confirmation. It deploys to **Railway** as a single
+service.
+
+> **Architecture in one line:** the browser talks only to our Express API; the
+> Express API talks to Supabase using the service_role key (server-side only)
+> and issues signed login tokens. So there's one thing to deploy, and no secrets
+> in the browser.
 
 ---
 
 ## ✨ Features
 
-- **Two roles** — Teacher (mom/admin) and Student, chosen at sign-up.
+- **Dead-simple login** — just a name and a password. Pick Teacher or Student at
+  sign-up. No email, no confirmation, no rate limits.
 - **Assignments** — teacher creates them (title, subject, due date, max score,
   instructions); students see them and upload one answer file each.
 - **Document annotation grading** — the main feature. Open any submitted PDF or
@@ -28,8 +35,9 @@ file storage), and served by a small **Express** server so it deploys to
   - Enter a **score** and **written feedback**; students see everything.
 - **Schedule / timeline** — tuitions, meetings, exams and other events grouped by
   day, with time, subject, location, notes and attendee list.
-- **Secure by default** — Supabase Row Level Security means students only ever
-  see their own submissions and the events they're invited to.
+- **Secure by default** — the Express API enforces access (passwords are bcrypt
+  hashed; students only ever see their own submissions and the events they're
+  invited to). The Supabase key never reaches the browser.
 
 ---
 
@@ -38,36 +46,36 @@ file storage), and served by a small **Express** server so it deploys to
 ### 1. Create a Supabase project
 Go to [supabase.com](https://supabase.com) → **New project**. Once ready, open
 **SQL Editor → New query**, paste the contents of
-[`supabase/schema.sql`](supabase/schema.sql), and click **Run**. This creates all
-tables, the storage bucket, and the security rules.
+[`supabase/schema.sql`](supabase/schema.sql), and click **Run**. This creates the
+tables and the storage bucket.
 
-> **Required for the simple name-only login:** In **Authentication → Providers
-> → Email**, turn **OFF** "Confirm email". Users sign up with just a name and
-> password and are logged straight in — no email is ever asked for or sent.
+> No Supabase Auth settings to touch — we don't use Supabase Auth at all. No
+> email provider, no "confirm email", nothing.
 
-### 2. Get your keys
+### 2. Get your key
 In Supabase → **Settings → API**, copy:
 - **Project URL**
-- the **`anon` / `public`** key  ← this one (NOT `service_role`)
+- the **`service_role`** key — this stays on the **server only** and is never
+  sent to the browser.
 
 ### 3. Run locally
 ```bash
-cp .env.example .env       # then fill in the two values
+cp .env.example .env       # fill in SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SESSION_SECRET
 npm install
-npm run dev                # http://localhost:5173
+npm run build              # build the frontend once
+npm start                  # server + app together → http://localhost:3000
 ```
+Prefer hot-reload while developing? Run `npm start` in one terminal and
+`npm run dev` in another (Vite proxies `/api` to the server) → http://localhost:5173.
 
 ### 4. First login (create the teacher account)
-On the sign-up screen just pick **Teacher**, type your mom's **name** and a
+On the sign-up screen pick **Teacher**, type your mom's **name** and a
 **password**, and you're in. Everyone else picks **Student** and does the same.
 No email, no confirmation.
 
-> Names are unique per type. If a name is already taken, the app asks you to add
-> a number (e.g. "Rahul 2"). Behind the scenes each name maps to a hidden
-> internal login — users never see it.
->
-> Want to be certain an account is a teacher? In Supabase → **Table editor →
-> `profiles`**, set that user's `role` to `teacher`.
+> If a name is already taken, the app asks you to add a number (e.g. "Rahul 2").
+> To flip anyone's role later: Supabase → **Table editor → `app_users`** → set
+> `role` to `teacher` or `student`.
 
 ---
 
@@ -75,17 +83,15 @@ No email, no confirmation.
 
 1. Push this repo to GitHub (already done if you're reading this there).
 2. In [Railway](https://railway.app): **New Project → Deploy from GitHub repo** →
-   pick this repo.
+   pick this repo → deploy the **`main`** branch.
 3. Railway auto-detects Nixpacks and runs `npm run build` then `npm start`.
-4. Add two **Variables** in the service settings:
+4. Add these **Variables** in the service settings:
    ```
-   VITE_SUPABASE_URL       = https://xxxx.supabase.co
-   VITE_SUPABASE_ANON_KEY  = your-anon-public-key
+   SUPABASE_URL                = https://xxxx.supabase.co
+   SUPABASE_SERVICE_ROLE_KEY   = your-service_role-key
+   SESSION_SECRET              = any-long-random-string
    ```
-5. Deploy. The health check is at `/healthz`.
-
-The server reads those variables at runtime and injects the public config into
-the page, so you can change environments without rebuilding.
+5. Deploy. The health check is at `/healthz`. Open the URL and sign up.
 
 ---
 
@@ -93,28 +99,34 @@ the page, so you can change environments without rebuilding.
 
 | Piece | What it does |
 |------|---------------|
-| `server/index.js` | Express server: serves the built app, injects runtime Supabase config, health check for Railway. |
-| `supabase/schema.sql` | Tables (`profiles`, `assignments`, `submissions`, `schedule_events`, `schedule_attendees`), the `submissions` storage bucket, and all RLS policies. |
+| `server/auth.js` | Username + password signup/login. Passwords are **bcrypt** hashed; a signed **JWT** is returned as the session token. |
+| `server/api.js` | All data endpoints (assignments, submissions, schedule, file upload + signed URLs), each guarded by the session token and role. |
+| `server/db.js` | Server-side Supabase client using the **service_role** key. |
+| `server/index.js` | Ties it together: mounts the API, serves the built app, health check for Railway. |
+| `supabase/schema.sql` | Tables (`app_users`, `assignments`, `submissions`, `schedule_events`, `schedule_attendees`) and the `submissions` storage bucket. |
+| `src/lib/api.js` | Tiny frontend client that sends the token and calls the API. |
 | `src/pages/GradePage.jsx` + `src/components/AnnotationCanvas.jsx` | The annotation grading experience. PDFs are rendered to images with `pdfjs-dist`; marks are stored as normalized coordinates so they scale cleanly. |
-| `src/context/AuthContext.jsx` | Supabase auth + the current user's role. |
 
-Uploaded files live in a **private** storage bucket. The app fetches them with
-short-lived signed URLs, and RLS ensures a student can only touch files inside
-their own folder.
+Uploaded files live in a **private** storage bucket. The browser never gets the
+Supabase key — it asks the API for a short-lived signed URL when it needs to
+show a file, and the API checks you're allowed to see it first.
 
 ---
 
 ## 🔐 Security notes
-- Only the **anon** key is ever used in the browser. Never expose the
-  `service_role` key.
-- All data access is guarded by Row Level Security in `schema.sql`.
+- The **service_role** key lives only on the server (in env vars). It is never
+  bundled into the frontend or sent to the browser.
+- Passwords are stored as **bcrypt hashes**, never plaintext.
+- Access is enforced by the API: students can only see their own submissions and
+  the events they attend; only teachers can create/grade/schedule.
 - `.env` is gitignored; only `.env.example` (with blank values) is committed.
+- Set a strong random `SESSION_SECRET` in production.
 
 ---
 
 ## 📜 Scripts
 ```bash
-npm run dev      # local dev server (Vite)
-npm run build    # production build → dist/
-npm start        # run the production Express server (what Railway uses)
+npm run dev      # Vite dev server with hot reload (proxies /api to :3000)
+npm run build    # build the frontend → dist/
+npm start        # run the Express server (API + built app) — what Railway uses
 ```

@@ -1,91 +1,71 @@
-import { createContext, useContext, useEffect, useState, useCallback } from 'react'
-import { supabase, isConfigured } from '../lib/supabase'
-import { nameToEmail } from '../lib/username'
+import { createContext, useContext, useEffect, useState } from 'react'
+import { api, getToken, setToken } from '../lib/api'
 
 const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
-  const [session, setSession] = useState(null)
-  const [profile, setProfile] = useState(null)
+  const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
 
-  const loadProfile = useCallback(async (userId) => {
-    if (!userId) return setProfile(null)
-    const { data } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .maybeSingle()
-    setProfile(data || null)
-  }, [])
-
+  // On load, if we have a token, verify it and fetch the current user.
   useEffect(() => {
-    if (!isConfigured) {
-      setLoading(false)
-      return
-    }
     let active = true
-
-    supabase.auth.getSession().then(async ({ data }) => {
-      if (!active) return
-      setSession(data.session)
-      await loadProfile(data.session?.user?.id)
-      setLoading(false)
-    })
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, newSession) => {
-      setSession(newSession)
-      await loadProfile(newSession?.user?.id)
-    })
-
+    ;(async () => {
+      if (!getToken()) {
+        setLoading(false)
+        return
+      }
+      try {
+        const { user } = await api.get('/auth/me')
+        if (active) setUser(user)
+      } catch {
+        setToken('') // invalid/expired
+      } finally {
+        if (active) setLoading(false)
+      }
+    })()
     return () => {
       active = false
-      subscription?.unsubscribe()
     }
-  }, [loadProfile])
+  }, [])
 
-  // Sign up with just a name + password. The name is mapped to a hidden
-  // internal email so users never deal with email at all.
   const signUp = async ({ fullName, password, role }) => {
-    const email = nameToEmail(fullName, role)
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: { data: { full_name: fullName.trim(), role } },
-    })
-    return { data, error }
+    try {
+      const { token, user } = await api.post('/auth/signup', { fullName, password, role })
+      setToken(token)
+      setUser(user)
+      return { error: null }
+    } catch (e) {
+      return { error: e }
+    }
   }
 
-  // Sign in with name + password. We must know whether it's a teacher or
-  // student to reconstruct the hidden email, so the login form passes the role.
-  const signIn = async ({ fullName, password, role }) => {
-    const email = nameToEmail(fullName, role)
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    })
-    return { data, error }
+  const signIn = async ({ fullName, password }) => {
+    try {
+      const { token, user } = await api.post('/auth/login', { fullName, password })
+      setToken(token)
+      setUser(user)
+      return { error: null }
+    } catch (e) {
+      return { error: e }
+    }
   }
 
-  const signOut = async () => {
-    await supabase.auth.signOut()
-    setProfile(null)
+  const signOut = () => {
+    setToken('')
+    setUser(null)
   }
 
   const value = {
-    session,
-    user: session?.user ?? null,
-    profile,
-    role: profile?.role ?? null,
-    isTeacher: profile?.role === 'teacher',
+    user,
+    profile: user, // pages read profile.full_name — user has it
+    role: user?.role ?? null,
+    isTeacher: user?.role === 'teacher',
     loading,
-    isConfigured,
+    isConfigured: true, // config is server-side now
     signUp,
     signIn,
     signOut,
-    refreshProfile: () => loadProfile(session?.user?.id),
   }
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
