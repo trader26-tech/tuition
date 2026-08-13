@@ -330,7 +330,6 @@ function CreateEventModal({ open, onClose, onCreated }) {
     kind: 'tuition',
     starts_at: toLocalInput(),
     ends_at: '',
-    location: '',
     meet_link: '',
   })
   const [repeats, setRepeats] = useState(false)
@@ -360,7 +359,7 @@ function CreateEventModal({ open, onClose, onCreated }) {
     })
 
   const reset = () => {
-    setForm({ title: '', kind: 'tuition', starts_at: toLocalInput(), ends_at: '', location: '', meet_link: '' })
+    setForm({ title: '', kind: 'tuition', starts_at: toLocalInput(), ends_at: '', meet_link: '' })
     setRepeats(false)
     setWeekdays(new Set())
     setPickedGroups(new Set())
@@ -376,7 +375,6 @@ function CreateEventModal({ open, onClose, onCreated }) {
       await api.post('/schedule', {
         title: form.title,
         kind: form.kind,
-        location: form.location,
         meet_link: form.meet_link,
         starts_at: new Date(form.starts_at).toISOString(),
         ends_at: form.ends_at ? new Date(form.ends_at).toISOString() : null,
@@ -417,11 +415,7 @@ function CreateEventModal({ open, onClose, onCreated }) {
             <label className="label">End time</label>
             <input className="input" type="datetime-local" value={form.ends_at} onChange={set('ends_at')} />
           </div>
-          <div>
-            <label className="label">Location</label>
-            <input className="input" value={form.location} onChange={set('location')} placeholder="e.g. Room 2" />
-          </div>
-          <div>
+          <div className="sm:col-span-2">
             <label className="label">Meeting link</label>
             <input className="input" type="url" value={form.meet_link} onChange={set('meet_link')} placeholder="https://meet.google.com/…" />
           </div>

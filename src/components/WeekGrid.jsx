@@ -21,21 +21,45 @@ const KIND_COLORS = {
 // places each event as a block at its time. Clicking a block calls onSelect.
 export default function WeekGrid({ anchor, events, onSelect, startHour = 7, endHour = 21 }) {
   const weekStart = useMemo(() => startOfWeek(anchor, { weekStartsOn: 1 }), [anchor])
+  const weekEnd = useMemo(() => addDays(weekStart, 7), [weekStart])
   const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart])
+
+  const eventsThisWeek = useMemo(
+    () =>
+      events.filter((e) => {
+        const d = new Date(e.starts_at)
+        return d >= weekStart && d < weekEnd
+      }),
+    [events, weekStart, weekEnd]
+  )
+
+  // Widen the visible hour range so no event this week falls outside the grid.
+  const [lo, hi] = useMemo(() => {
+    let min = startHour
+    let max = endHour
+    for (const e of eventsThisWeek) {
+      const s = getHours(new Date(e.starts_at))
+      const en = e.ends_at ? getHours(new Date(e.ends_at)) : s + 1
+      if (s < min) min = s
+      if (en + 1 > max) max = Math.min(24, en + 1)
+    }
+    return [min, max]
+  }, [eventsThisWeek, startHour, endHour])
+
   const hours = useMemo(
-    () => Array.from({ length: endHour - startHour + 1 }, (_, i) => startHour + i),
-    [startHour, endHour]
+    () => Array.from({ length: hi - lo + 1 }, (_, i) => lo + i),
+    [lo, hi]
   )
 
   const rowH = 56 // px per hour
-  const gridHeight = (endHour - startHour) * rowH
+  const gridHeight = (hi - lo) * rowH
 
   const eventsForDay = (day) =>
     events.filter((e) => isSameDay(new Date(e.starts_at), day))
 
   const blockStyle = (e) => {
     const start = new Date(e.starts_at)
-    const startMins = (getHours(start) - startHour) * 60 + getMinutes(start)
+    const startMins = (getHours(start) - lo) * 60 + getMinutes(start)
     const end = e.ends_at ? new Date(e.ends_at) : null
     const durationMins = end ? Math.max(30, differenceInMinutes(end, start)) : 50
     return {
