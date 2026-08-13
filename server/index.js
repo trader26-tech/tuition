@@ -6,6 +6,7 @@ import fs from 'node:fs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const distDir = path.join(__dirname, '..', 'dist')
+const indexPath = path.join(distDir, 'index.html')
 
 const app = express()
 app.use(compression())
@@ -13,25 +14,35 @@ app.use(compression())
 // Health check for Railway.
 app.get('/healthz', (_req, res) => res.status(200).send('ok'))
 
-// Expose the public Supabase config to the browser at runtime, so the same
-// build can be deployed to any environment without rebuilding. These are the
-// PUBLIC anon values only — never the service_role key.
-app.get('/config.js', (_req, res) => {
+if (!fs.existsSync(distDir)) {
+  console.warn('[server] dist/ not found — did you run "npm run build"?')
+}
+
+// Build the runtime config <script> that exposes the PUBLIC Supabase values to
+// the browser. These are the public anon values only — never the service_role
+// key. Doing this at serve time means one build works in any environment.
+function runtimeConfigScript() {
   const cfg = {
     SUPABASE_URL: process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '',
     SUPABASE_ANON_KEY:
       process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '',
   }
-  res.type('application/javascript')
-  res.send(`window.__ENV__ = ${JSON.stringify(cfg)};`)
-})
-
-if (!fs.existsSync(distDir)) {
-  console.warn('[server] dist/ not found — did you run "npm run build"?')
+  return `<script>window.__ENV__ = ${JSON.stringify(cfg)};</script>`
 }
 
+// Read index.html once at boot and cache the injected version.
+let injectedHtml = ''
+try {
+  const raw = fs.readFileSync(indexPath, 'utf8')
+  injectedHtml = raw.replace('<!--__RUNTIME_CONFIG__-->', runtimeConfigScript())
+} catch {
+  console.warn('[server] could not read dist/index.html yet')
+}
+
+// Serve hashed static assets with long cache; never cache index.html.
 app.use(
   express.static(distDir, {
+    index: false,
     maxAge: '1y',
     setHeaders: (res, filePath) => {
       if (filePath.endsWith('index.html')) {
@@ -41,9 +52,13 @@ app.use(
   })
 )
 
-// SPA fallback.
+// SPA fallback — always return the config-injected index.html.
 app.get('*', (_req, res) => {
-  res.sendFile(path.join(distDir, 'index.html'))
+  if (!injectedHtml) {
+    return res.status(500).send('App not built. Run "npm run build".')
+  }
+  res.setHeader('Cache-Control', 'no-cache')
+  res.type('html').send(injectedHtml)
 })
 
 const port = process.env.PORT || 3000

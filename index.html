@@ -15,10 +15,10 @@
   </head>
   <body>
     <div id="root"></div>
-    <!-- Runtime public config (Supabase URL + anon key), served by the Express
-         server in production. Harmless 404 during local `vite` dev, where Vite
-         env vars are used instead. -->
-    <script src="/config.js" type="text/javascript">
+    <!-- In production the Express server injects a small window.__ENV__ script
+         here (see server/index.js). In local `vite` dev there is no server, so
+         the app falls back to Vite's import.meta.env (.env file). -->
+    <!--__RUNTIME_CONFIG__-->
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
