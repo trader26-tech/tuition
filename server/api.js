@@ -322,6 +322,49 @@ router.get('/submissions/:id/file-url', wrap(async (req, res) => {
 }))
 
 /* ─────────────── SCHEDULE ─────────────── */
+
+// Expand one stored event into concrete occurrences. A one-off event yields a
+// single occurrence; a weekly-recurring event (repeat_weekdays set) yields one
+// occurrence per matching weekday from starts_at through repeat_until.
+function expandEvent(e) {
+  const start = new Date(e.starts_at)
+  const durationMs = e.ends_at ? new Date(e.ends_at) - start : 0
+  const weekdays = Array.isArray(e.repeat_weekdays) ? e.repeat_weekdays : []
+
+  // ISO weekday: 1=Mon..7=Sun.
+  const isoDay = (d) => ((d.getDay() + 6) % 7) + 1
+
+  const makeOccurrence = (occStart) => {
+    const occEnd = durationMs ? new Date(occStart.getTime() + durationMs) : null
+    return {
+      ...e,
+      // Stable per-occurrence id so React keys don't collide across a series.
+      occurrence_id: `${e.id}_${occStart.toISOString().slice(0, 10)}`,
+      starts_at: occStart.toISOString(),
+      ends_at: occEnd ? occEnd.toISOString() : null,
+      is_recurring: weekdays.length > 0,
+    }
+  }
+
+  if (weekdays.length === 0) return [makeOccurrence(start)]
+
+  const until = e.repeat_until ? new Date(e.repeat_until) : null
+  if (!until) return [makeOccurrence(start)] // safety: no end date -> just the first
+
+  const occurrences = []
+  const cursor = new Date(start)
+  // Cap iterations so a bad rule can never loop forever.
+  for (let guard = 0; guard < 400 && cursor <= until; guard++) {
+    if (weekdays.includes(isoDay(cursor)) && cursor >= start) {
+      const occStart = new Date(cursor)
+      occStart.setHours(start.getHours(), start.getMinutes(), 0, 0)
+      if (occStart >= start && occStart <= until) occurrences.push(makeOccurrence(occStart))
+    }
+    cursor.setDate(cursor.getDate() + 1)
+  }
+  return occurrences
+}
+
 router.get('/schedule', wrap(async (req, res) => {
   const { data: events } = await db
     .from('schedule_events')
@@ -338,18 +381,34 @@ router.get('/schedule', wrap(async (req, res) => {
     byEvent[a.event_id].push({ id: a.student_id, name: a.student?.full_name || 'Student' })
   })
 
-  let list = events || []
+  let base = events || []
   // Students only see events they attend.
   if (req.user.role !== 'teacher') {
-    list = list.filter((e) => (byEvent[e.id] || []).some((s) => s.id === req.user.id))
+    base = base.filter((e) => (byEvent[e.id] || []).some((s) => s.id === req.user.id))
   }
-  res.json(list.map((e) => ({ ...e, attendees: byEvent[e.id] || [] })))
+
+  // Expand recurrence into individual occurrences, attach attendees.
+  const occurrences = base
+    .flatMap((e) => expandEvent({ ...e, attendees: byEvent[e.id] || [] }))
+    .sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at))
+
+  res.json(occurrences)
 }))
 
 router.post('/schedule', requireTeacher, wrap(async (req, res) => {
-  const { title, kind, subject, location, notes, starts_at, ends_at, attendees } = req.body || {}
+  const {
+    title, kind, subject, location, notes, starts_at, ends_at, attendees,
+    repeat_weekdays, repeat_until,
+  } = req.body || {}
   if (!title?.trim() || !starts_at)
     return res.status(400).json({ error: 'Title and start time are required.' })
+
+  // Sanitise the recurrence rule.
+  const weekdays = Array.isArray(repeat_weekdays)
+    ? [...new Set(repeat_weekdays.map(Number).filter((n) => n >= 1 && n <= 7))].sort()
+    : []
+  if (weekdays.length && !repeat_until)
+    return res.status(400).json({ error: 'Please choose an end date for the repeat.' })
 
   const { data: event, error } = await db
     .from('schedule_events')
@@ -361,6 +420,8 @@ router.post('/schedule', requireTeacher, wrap(async (req, res) => {
       notes: (notes || '').trim(),
       starts_at,
       ends_at: ends_at || null,
+      repeat_weekdays: weekdays,
+      repeat_until: weekdays.length ? repeat_until : null,
       created_by: req.user.id,
     })
     .select()

@@ -103,7 +103,7 @@ export default function WeekGrid({ anchor, events, onSelect, startHour = 7, endH
                 const s = blockStyle(e)
                 return (
                   <button
-                    key={e.id}
+                    key={e.occurrence_id || e.id}
                     onClick={() => onSelect?.(e)}
                     className={`absolute inset-x-1 overflow-hidden rounded-md px-1.5 py-1 text-left text-white shadow-sm ${
                       KIND_COLORS[e.kind] || KIND_COLORS.other
@@ -111,7 +111,9 @@ export default function WeekGrid({ anchor, events, onSelect, startHour = 7, endH
                     style={{ top: s.top, height: s.height }}
                     title={e.title}
                   >
-                    <p className="truncate text-[11px] font-semibold leading-tight">{e.title}</p>
+                    <p className="truncate text-[11px] font-semibold leading-tight">
+                      {e.is_recurring ? '↻ ' : ''}{e.title}
+                    </p>
                     <p className="truncate text-[10px] opacity-90">
                       {format(new Date(e.starts_at), 'h:mm a')}
                     </p>

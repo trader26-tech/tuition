@@ -184,7 +184,7 @@ export default function Schedule() {
               </div>
               <div className="space-y-3">
                 {dayEvents.map((e) => (
-                  <EventCard key={e.id} event={e} isTeacher={isTeacher} onDeleted={load} />
+                  <EventCard key={e.occurrence_id || e.id} event={e} isTeacher={isTeacher} onDeleted={load} />
                 ))}
               </div>
             </div>
@@ -200,11 +200,17 @@ export default function Schedule() {
               <Badge tone={(KIND_META[selected.kind] || KIND_META.other).tone}>
                 {(KIND_META[selected.kind] || KIND_META.other).label}
               </Badge>
+              {selected.is_recurring && <Badge tone="gray">↻ Repeats weekly</Badge>}
               <span className="text-ink-500">
                 {format(new Date(selected.starts_at), 'EEE, d MMM · h:mm a')}
                 {selected.ends_at ? ` – ${fmtTime(selected.ends_at)}` : ''}
               </span>
             </div>
+            {selected.is_recurring && (
+              <p className="text-xs text-ink-400">
+                Deleting removes the whole repeating series.
+              </p>
+            )}
             {selected.subject && <p><span className="font-medium">Subject:</span> {selected.subject}</p>}
             {selected.location && <p><span className="font-medium">Location:</span> {selected.location}</p>}
             {selected.notes && <p className="whitespace-pre-wrap text-ink-600">{selected.notes}</p>}
@@ -269,6 +275,7 @@ function EventCard({ event, isTeacher, onDeleted }) {
           <span className={`h-2 w-2 rounded-full ${meta.dot}`} />
           <h3 className="font-semibold text-ink-900">{event.title}</h3>
           <Badge tone={meta.tone}>{meta.label}</Badge>
+          {event.is_recurring && <Badge tone="gray">↻ Weekly</Badge>}
         </div>
         <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-500">
           {event.subject && <span>📘 {event.subject}</span>}
@@ -308,11 +315,21 @@ function CreateEventModal({ open, onClose, onCreated }) {
     notes: '',
     starts_at: toLocalInput(),
     ends_at: '',
+    repeat_until: '',
   })
+  const [repeats, setRepeats] = useState(false)
+  const [weekdays, setWeekdays] = useState(new Set()) // ISO 1..7
   const [students, setStudents] = useState([])
   const [selected, setSelected] = useState(new Set())
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+
+  const toggleWeekday = (n) =>
+    setWeekdays((s) => {
+      const next = new Set(s)
+      next.has(n) ? next.delete(n) : next.add(n)
+      return next
+    })
 
   useEffect(() => {
     if (!open) return
@@ -329,6 +346,10 @@ function CreateEventModal({ open, onClose, onCreated }) {
 
   const submit = async (e) => {
     e.preventDefault()
+    if (repeats && weekdays.size === 0)
+      return setError('Pick at least one day for the repeat.')
+    if (repeats && !form.repeat_until)
+      return setError('Choose an end date for the repeat.')
     setBusy(true)
     setError('')
     try {
@@ -341,9 +362,16 @@ function CreateEventModal({ open, onClose, onCreated }) {
         starts_at: new Date(form.starts_at).toISOString(),
         ends_at: form.ends_at ? new Date(form.ends_at).toISOString() : null,
         attendees: [...selected],
+        repeat_weekdays: repeats ? [...weekdays] : [],
+        // End of the chosen day so that day's sessions are included.
+        repeat_until: repeats && form.repeat_until
+          ? new Date(form.repeat_until + 'T23:59:59').toISOString()
+          : null,
       })
-      setForm({ title: '', kind: 'tuition', subject: '', location: '', notes: '', starts_at: toLocalInput(), ends_at: '' })
+      setForm({ title: '', kind: 'tuition', subject: '', location: '', notes: '', starts_at: toLocalInput(), ends_at: '', repeat_until: '' })
       setSelected(new Set())
+      setRepeats(false)
+      setWeekdays(new Set())
       onCreated()
     } catch (err) {
       setError(err.message)
@@ -380,6 +408,62 @@ function CreateEventModal({ open, onClose, onCreated }) {
             <label className="label">Ends (optional)</label>
             <input className="input" type="datetime-local" value={form.ends_at} onChange={set('ends_at')} />
           </div>
+
+          {/* Recurrence */}
+          <div className="sm:col-span-2">
+            <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-ink-700">
+              <input
+                type="checkbox"
+                className="accent-brand-600"
+                checked={repeats}
+                onChange={(e) => setRepeats(e.target.checked)}
+              />
+              Repeat weekly
+            </label>
+
+            {repeats && (
+              <div className="mt-2 space-y-3 rounded-lg border border-ink-200 p-3">
+                <div>
+                  <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-ink-500">
+                    On these days
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      { n: 1, l: 'Mon' }, { n: 2, l: 'Tue' }, { n: 3, l: 'Wed' },
+                      { n: 4, l: 'Thu' }, { n: 5, l: 'Fri' }, { n: 6, l: 'Sat' }, { n: 7, l: 'Sun' },
+                    ].map((d) => {
+                      const on = weekdays.has(d.n)
+                      return (
+                        <button
+                          type="button"
+                          key={d.n}
+                          onClick={() => toggleWeekday(d.n)}
+                          className={`h-9 w-11 rounded-md text-sm font-medium transition ${
+                            on ? 'bg-brand-600 text-white' : 'bg-ink-100 text-ink-600 hover:bg-ink-200'
+                          }`}
+                        >
+                          {d.l}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+                <div>
+                  <label className="label">Repeat until</label>
+                  <input
+                    className="input"
+                    type="date"
+                    value={form.repeat_until}
+                    onChange={set('repeat_until')}
+                  />
+                  <p className="mt-1 text-xs text-ink-400">
+                    Uses the time from “Starts” for every session.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+
           <div className="sm:col-span-2">
             <label className="label">Location (optional)</label>
             <input className="input" value={form.location} onChange={set('location')} placeholder="e.g. Room 2 / Online (Zoom)" />

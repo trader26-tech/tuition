@@ -113,9 +113,19 @@ create table if not exists public.schedule_events (
   notes        text default '',
   starts_at    timestamptz not null,
   ends_at      timestamptz,
+  -- Recurrence: a weekly rule. repeat_weekdays holds ISO weekday numbers
+  -- (1=Mon … 7=Sun). Empty/null = one-off event on starts_at. repeat_until is
+  -- the last date (inclusive) the series recurs. starts_at/ends_at carry the
+  -- time-of-day for every occurrence.
+  repeat_weekdays  int[] default '{}',
+  repeat_until     timestamptz,
   created_by   uuid references public.app_users(id) on delete set null,
   created_at   timestamptz not null default now()
 );
+
+-- Add recurrence columns if this table already existed.
+alter table public.schedule_events add column if not exists repeat_weekdays int[] default '{}';
+alter table public.schedule_events add column if not exists repeat_until timestamptz;
 
 create table if not exists public.schedule_attendees (
   event_id    uuid not null references public.schedule_events(id) on delete cascade,
