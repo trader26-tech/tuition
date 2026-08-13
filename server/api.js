@@ -12,6 +12,14 @@ router.use(requireAuth)
 const wrap = (fn) => (req, res) =>
   fn(req, res).catch((e) => {
     console.error('[api]', e)
+    // Foreign-key violation (Postgres 23503) almost always means the signed-in
+    // user's id no longer exists (a stale token after a DB reset). Turn it into
+    // a clean "sign in again" so the client can recover instead of a raw 500.
+    if (e?.code === '23503' || /foreign key constraint/i.test(e?.message || '')) {
+      return res
+        .status(401)
+        .json({ error: 'Your session is out of date. Please sign in again.' })
+    }
     res.status(500).json({ error: e.message || 'Server error' })
   })
 
