@@ -211,9 +211,23 @@ export default function Schedule() {
                 Deleting removes the whole repeating series.
               </p>
             )}
-            {selected.subject && <p><span className="font-medium">Subject:</span> {selected.subject}</p>}
             {selected.location && <p><span className="font-medium">Location:</span> {selected.location}</p>}
-            {selected.notes && <p className="whitespace-pre-wrap text-ink-600">{selected.notes}</p>}
+            {selected.meet_link && (
+              <a
+                href={selected.meet_link}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn-primary w-full sm:w-auto"
+              >
+                <Icon.Calendar width={16} /> Join meeting
+              </a>
+            )}
+            {selected.groups?.length > 0 && (
+              <p className="text-ink-500">
+                <span className="font-medium text-ink-700">Groups: </span>
+                {selected.groups.map((g) => g.name).join(', ')}
+              </p>
+            )}
             {selected.attendees?.length > 0 && (
               <p className="text-ink-500">
                 <span className="font-medium text-ink-700">Students: </span>
@@ -254,7 +268,6 @@ export default function Schedule() {
 function EventCard({ event, isTeacher, onDeleted }) {
   const meta = KIND_META[event.kind] || KIND_META.other
   const [busy, setBusy] = useState(false)
-  const attendees = event.attendees || []
 
   const del = async () => {
     if (!confirm('Delete this event?')) return
@@ -278,18 +291,18 @@ function EventCard({ event, isTeacher, onDeleted }) {
           {event.is_recurring && <Badge tone="gray">↻ Weekly</Badge>}
         </div>
         <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-500">
-          {event.subject && <span>📘 {event.subject}</span>}
           {event.location && <span>📍 {event.location}</span>}
-          {attendees.length > 0 && (
+          {event.meet_link && (
+            <a href={event.meet_link} target="_blank" rel="noopener noreferrer" className="font-medium text-brand-600 hover:underline">
+              🔗 Join meeting
+            </a>
+          )}
+          {event.groups?.length > 0 && (
             <span className="inline-flex items-center gap-1">
-              <Icon.Users width={13} /> {attendees.length} student{attendees.length > 1 ? 's' : ''}
+              <Icon.Users width={13} /> {event.groups.map((g) => g.name).join(', ')}
             </span>
           )}
         </div>
-        {event.notes && <p className="mt-2 text-sm text-ink-600">{event.notes}</p>}
-        {isTeacher && attendees.length > 0 && (
-          <p className="mt-2 text-xs text-ink-400">{attendees.map((a) => a.name).join(', ')}</p>
-        )}
       </div>
 
       {isTeacher && (
@@ -306,72 +319,71 @@ function EventCard({ event, isTeacher, onDeleted }) {
   )
 }
 
+const WEEKDAYS = [
+  { n: 1, l: 'Mon' }, { n: 2, l: 'Tue' }, { n: 3, l: 'Wed' },
+  { n: 4, l: 'Thu' }, { n: 5, l: 'Fri' }, { n: 6, l: 'Sat' }, { n: 7, l: 'Sun' },
+]
+
 function CreateEventModal({ open, onClose, onCreated }) {
   const [form, setForm] = useState({
     title: '',
     kind: 'tuition',
-    subject: '',
-    location: '',
-    notes: '',
     starts_at: toLocalInput(),
     ends_at: '',
-    repeat_until: '',
+    location: '',
+    meet_link: '',
   })
   const [repeats, setRepeats] = useState(false)
   const [weekdays, setWeekdays] = useState(new Set()) // ISO 1..7
-  const [students, setStudents] = useState([])
-  const [selected, setSelected] = useState(new Set())
+  const [groups, setGroups] = useState([])
+  const [pickedGroups, setPickedGroups] = useState(new Set())
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
+  useEffect(() => {
+    if (!open) return
+    api.get('/groups').then(setGroups).catch(() => setGroups([]))
+  }, [open])
+
+  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }))
   const toggleWeekday = (n) =>
     setWeekdays((s) => {
       const next = new Set(s)
       next.has(n) ? next.delete(n) : next.add(n)
       return next
     })
-
-  useEffect(() => {
-    if (!open) return
-    api.get('/users/students').then(setStudents).catch(() => setStudents([]))
-  }, [open])
-
-  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }))
-  const toggle = (id) =>
-    setSelected((s) => {
-      const n = new Set(s)
-      n.has(id) ? n.delete(id) : n.add(id)
-      return n
+  const toggleGroup = (id) =>
+    setPickedGroups((s) => {
+      const next = new Set(s)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
     })
+
+  const reset = () => {
+    setForm({ title: '', kind: 'tuition', starts_at: toLocalInput(), ends_at: '', location: '', meet_link: '' })
+    setRepeats(false)
+    setWeekdays(new Set())
+    setPickedGroups(new Set())
+  }
 
   const submit = async (e) => {
     e.preventDefault()
     if (repeats && weekdays.size === 0)
-      return setError('Pick at least one day for the repeat.')
-    if (repeats && !form.repeat_until)
-      return setError('Choose an end date for the repeat.')
+      return setError('Pick at least one day to repeat on.')
     setBusy(true)
     setError('')
     try {
       await api.post('/schedule', {
         title: form.title,
         kind: form.kind,
-        subject: form.subject,
         location: form.location,
-        notes: form.notes,
+        meet_link: form.meet_link,
         starts_at: new Date(form.starts_at).toISOString(),
         ends_at: form.ends_at ? new Date(form.ends_at).toISOString() : null,
-        attendees: [...selected],
         repeat_weekdays: repeats ? [...weekdays] : [],
-        // End of the chosen day so that day's sessions are included.
-        repeat_until: repeats && form.repeat_until
-          ? new Date(form.repeat_until + 'T23:59:59').toISOString()
-          : null,
+        groupIds: [...pickedGroups],
       })
-      setForm({ title: '', kind: 'tuition', subject: '', location: '', notes: '', starts_at: toLocalInput(), ends_at: '', repeat_until: '' })
-      setSelected(new Set())
-      setRepeats(false)
-      setWeekdays(new Set())
+      reset()
       onCreated()
     } catch (err) {
       setError(err.message)
@@ -386,7 +398,7 @@ function CreateEventModal({ open, onClose, onCreated }) {
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="sm:col-span-2">
             <label className="label">Title</label>
-            <input className="input" value={form.title} onChange={set('title')} placeholder="e.g. Physics tuition — Batch A" required />
+            <input className="input" value={form.title} onChange={set('title')} placeholder="e.g. Physics tuition — Batch A" required autoFocus />
           </div>
           <div>
             <label className="label">Type</label>
@@ -396,106 +408,83 @@ function CreateEventModal({ open, onClose, onCreated }) {
               ))}
             </select>
           </div>
+          <div className="hidden sm:block" />
           <div>
-            <label className="label">Subject</label>
-            <input className="input" value={form.subject} onChange={set('subject')} placeholder="e.g. Physics" />
-          </div>
-          <div>
-            <label className="label">Starts</label>
+            <label className="label">Start time</label>
             <input className="input" type="datetime-local" value={form.starts_at} onChange={set('starts_at')} required />
           </div>
           <div>
-            <label className="label">Ends (optional)</label>
+            <label className="label">End time</label>
             <input className="input" type="datetime-local" value={form.ends_at} onChange={set('ends_at')} />
           </div>
-
-          {/* Recurrence */}
-          <div className="sm:col-span-2">
-            <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-ink-700">
-              <input
-                type="checkbox"
-                className="accent-brand-600"
-                checked={repeats}
-                onChange={(e) => setRepeats(e.target.checked)}
-              />
-              Repeat weekly
-            </label>
-
-            {repeats && (
-              <div className="mt-2 space-y-3 rounded-lg border border-ink-200 p-3">
-                <div>
-                  <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-ink-500">
-                    On these days
-                  </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {[
-                      { n: 1, l: 'Mon' }, { n: 2, l: 'Tue' }, { n: 3, l: 'Wed' },
-                      { n: 4, l: 'Thu' }, { n: 5, l: 'Fri' }, { n: 6, l: 'Sat' }, { n: 7, l: 'Sun' },
-                    ].map((d) => {
-                      const on = weekdays.has(d.n)
-                      return (
-                        <button
-                          type="button"
-                          key={d.n}
-                          onClick={() => toggleWeekday(d.n)}
-                          className={`h-9 w-11 rounded-md text-sm font-medium transition ${
-                            on ? 'bg-brand-600 text-white' : 'bg-ink-100 text-ink-600 hover:bg-ink-200'
-                          }`}
-                        >
-                          {d.l}
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-                <div>
-                  <label className="label">Repeat until</label>
-                  <input
-                    className="input"
-                    type="date"
-                    value={form.repeat_until}
-                    onChange={set('repeat_until')}
-                  />
-                  <p className="mt-1 text-xs text-ink-400">
-                    Uses the time from “Starts” for every session.
-                  </p>
-                </div>
-              </div>
-            )}
+          <div>
+            <label className="label">Location</label>
+            <input className="input" value={form.location} onChange={set('location')} placeholder="e.g. Room 2" />
           </div>
-
-          <div className="sm:col-span-2">
-            <label className="label">Location (optional)</label>
-            <input className="input" value={form.location} onChange={set('location')} placeholder="e.g. Room 2 / Online (Zoom)" />
-          </div>
-          <div className="sm:col-span-2">
-            <label className="label">Notes (optional)</label>
-            <textarea className="input min-h-[70px]" value={form.notes} onChange={set('notes')} placeholder="Anything to remember…" />
+          <div>
+            <label className="label">Meeting link</label>
+            <input className="input" type="url" value={form.meet_link} onChange={set('meet_link')} placeholder="https://meet.google.com/…" />
           </div>
         </div>
 
+        {/* Repeat weekly (days only — auto-rolls forward) */}
         <div>
-          <label className="label">Who's attending? (optional)</label>
-          {students.length === 0 ? (
+          <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-ink-700">
+            <input type="checkbox" className="accent-brand-600" checked={repeats} onChange={(e) => setRepeats(e.target.checked)} />
+            Repeat weekly
+          </label>
+          {repeats && (
+            <div className="mt-2 rounded-lg border border-ink-200 p-3">
+              <div className="flex flex-wrap gap-1.5">
+                {WEEKDAYS.map((d) => {
+                  const on = weekdays.has(d.n)
+                  return (
+                    <button
+                      type="button"
+                      key={d.n}
+                      onClick={() => toggleWeekday(d.n)}
+                      className={`h-9 w-11 rounded-md text-sm font-medium transition ${
+                        on ? 'bg-brand-600 text-white' : 'bg-ink-100 text-ink-600 hover:bg-ink-200'
+                      }`}
+                    >
+                      {d.l}
+                    </button>
+                  )
+                })}
+              </div>
+              <p className="mt-2 text-xs text-ink-400">
+                Repeats on these days at the start time, filling the timetable ahead.
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* Attendees — by group */}
+        <div>
+          <label className="label">Assign to groups</label>
+          {groups.length === 0 ? (
             <p className="rounded-lg bg-ink-50 px-3 py-2 text-sm text-ink-400">
-              No student accounts yet. Students you add later can be attached to future events.
+              No groups yet. Create groups in the <b>Students → Groups</b> tab, then assign them here.
             </p>
           ) : (
-            <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-ink-200 p-2">
-              {students.map((st) => (
-                <label
-                  key={st.id}
-                  className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-ink-50"
-                >
-                  <input
-                    type="checkbox"
-                    className="accent-brand-600"
-                    checked={selected.has(st.id)}
-                    onChange={() => toggle(st.id)}
-                  />
-                  {st.full_name || 'Unnamed student'}
-                </label>
-              ))}
+            <div className="flex flex-wrap gap-1.5">
+              {groups.map((g) => {
+                const on = pickedGroups.has(g.id)
+                return (
+                  <button
+                    type="button"
+                    key={g.id}
+                    onClick={() => toggleGroup(g.id)}
+                    className={`badge border transition ${
+                      on
+                        ? 'border-brand-500 bg-brand-600 text-white'
+                        : 'border-ink-200 bg-white text-ink-600 hover:bg-ink-50'
+                    }`}
+                  >
+                    {g.name} · {g.members.length}
+                  </button>
+                )
+              })}
             </div>
           )}
         </div>

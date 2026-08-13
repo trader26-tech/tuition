@@ -384,22 +384,23 @@ router.get('/submissions/:id/file-url', wrap(async (req, res) => {
 
 /* ─────────────── SCHEDULE ─────────────── */
 
+// How far ahead a weekly-recurring event auto-fills (no end date needed).
+const ROLLING_DAYS = 100 // ~3 months
+
 // Expand one stored event into concrete occurrences. A one-off event yields a
-// single occurrence; a weekly-recurring event (repeat_weekdays set) yields one
-// occurrence per matching weekday from starts_at through repeat_until.
+// single occurrence; a weekly-recurring event (repeat_weekdays set) rolls
+// forward from starts_at for ~3 months.
 function expandEvent(e) {
   const start = new Date(e.starts_at)
   const durationMs = e.ends_at ? new Date(e.ends_at) - start : 0
   const weekdays = Array.isArray(e.repeat_weekdays) ? e.repeat_weekdays : []
 
-  // ISO weekday: 1=Mon..7=Sun.
   const isoDay = (d) => ((d.getDay() + 6) % 7) + 1
 
   const makeOccurrence = (occStart) => {
     const occEnd = durationMs ? new Date(occStart.getTime() + durationMs) : null
     return {
       ...e,
-      // Stable per-occurrence id so React keys don't collide across a series.
       occurrence_id: `${e.id}_${occStart.toISOString().slice(0, 10)}`,
       starts_at: occStart.toISOString(),
       ends_at: occEnd ? occEnd.toISOString() : null,
@@ -409,90 +410,110 @@ function expandEvent(e) {
 
   if (weekdays.length === 0) return [makeOccurrence(start)]
 
-  const until = e.repeat_until ? new Date(e.repeat_until) : null
-  if (!until) return [makeOccurrence(start)] // safety: no end date -> just the first
+  // Roll forward: from the later of (start, today) for ROLLING_DAYS. If an
+  // explicit repeat_until exists (legacy rows), don't go past it.
+  const now = new Date()
+  const windowStart = start > now ? start : now
+  const windowEnd = new Date(windowStart.getTime() + ROLLING_DAYS * 86400000)
+  const hardEnd = e.repeat_until ? new Date(e.repeat_until) : windowEnd
+  const end = hardEnd < windowEnd ? hardEnd : windowEnd
 
   const occurrences = []
   const cursor = new Date(start)
-  // Cap iterations so a bad rule can never loop forever.
-  for (let guard = 0; guard < 400 && cursor <= until; guard++) {
-    if (weekdays.includes(isoDay(cursor)) && cursor >= start) {
+  cursor.setHours(0, 0, 0, 0)
+  for (let guard = 0; guard < 500 && cursor <= end; guard++) {
+    if (weekdays.includes(isoDay(cursor))) {
       const occStart = new Date(cursor)
       occStart.setHours(start.getHours(), start.getMinutes(), 0, 0)
-      if (occStart >= start && occStart <= until) occurrences.push(makeOccurrence(occStart))
+      if (occStart >= start && occStart >= new Date(now.getTime() - 86400000) && occStart <= end) {
+        occurrences.push(makeOccurrence(occStart))
+      }
     }
     cursor.setDate(cursor.getDate() + 1)
   }
-  return occurrences
+  return occurrences.length ? occurrences : [makeOccurrence(start)]
 }
 
 router.get('/schedule', wrap(async (req, res) => {
-  const { data: events } = await db
-    .from('schedule_events')
-    .select('*')
-    .order('starts_at', { ascending: true })
+  const [{ data: events }, { data: att }, { data: evGroups }, { data: members }] =
+    await Promise.all([
+      db.from('schedule_events').select('*').order('starts_at', { ascending: true }),
+      db.from('schedule_attendees').select('event_id, student_id, student:student_id(full_name)'),
+      db.from('schedule_event_groups').select('event_id, group_id, group:group_id(name)'),
+      db.from('group_members').select('group_id, student:student_id(id, full_name)'),
+    ])
 
-  const { data: att } = await db
-    .from('schedule_attendees')
-    .select('event_id, student_id, student:student_id(full_name)')
-
-  const byEvent = {}
-  ;(att || []).forEach((a) => {
-    byEvent[a.event_id] = byEvent[a.event_id] || []
-    byEvent[a.event_id].push({ id: a.student_id, name: a.student?.full_name || 'Student' })
+  // Map group -> its student members.
+  const groupMembers = {}
+  ;(members || []).forEach((m) => {
+    if (!m.student) return
+    groupMembers[m.group_id] = groupMembers[m.group_id] || []
+    groupMembers[m.group_id].push({ id: m.student.id, name: m.student.full_name })
   })
 
+  // Attendees per event = directly-attached students + everyone in its groups.
+  const byEvent = {}
+  const groupsByEvent = {}
+  ;(att || []).forEach((a) => {
+    byEvent[a.event_id] = byEvent[a.event_id] || new Map()
+    byEvent[a.event_id].set(a.student_id, a.student?.full_name || 'Student')
+  })
+  ;(evGroups || []).forEach((g) => {
+    groupsByEvent[g.event_id] = groupsByEvent[g.event_id] || []
+    groupsByEvent[g.event_id].push({ id: g.group_id, name: g.group?.name || 'Group' })
+    byEvent[g.event_id] = byEvent[g.event_id] || new Map()
+    ;(groupMembers[g.group_id] || []).forEach((s) => byEvent[g.event_id].set(s.id, s.name))
+  })
+
+  const attendeesOf = (id) =>
+    [...(byEvent[id]?.entries() || [])].map(([sid, name]) => ({ id: sid, name }))
+
   let base = events || []
-  // Students only see events they attend.
   if (req.user.role !== 'teacher') {
-    base = base.filter((e) => (byEvent[e.id] || []).some((s) => s.id === req.user.id))
+    base = base.filter((e) => attendeesOf(e.id).some((s) => s.id === req.user.id))
   }
 
-  // Expand recurrence into individual occurrences, attach attendees.
   const occurrences = base
-    .flatMap((e) => expandEvent({ ...e, attendees: byEvent[e.id] || [] }))
+    .flatMap((e) =>
+      expandEvent({ ...e, attendees: attendeesOf(e.id), groups: groupsByEvent[e.id] || [] })
+    )
     .sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at))
 
   res.json(occurrences)
 }))
 
 router.post('/schedule', requireTeacher, wrap(async (req, res) => {
-  const {
-    title, kind, subject, location, notes, starts_at, ends_at, attendees,
-    repeat_weekdays, repeat_until,
-  } = req.body || {}
+  const { title, kind, location, meet_link, starts_at, ends_at, groupIds, repeat_weekdays } =
+    req.body || {}
   if (!title?.trim() || !starts_at)
     return res.status(400).json({ error: 'Title and start time are required.' })
 
-  // Sanitise the recurrence rule.
   const weekdays = Array.isArray(repeat_weekdays)
     ? [...new Set(repeat_weekdays.map(Number).filter((n) => n >= 1 && n <= 7))].sort()
     : []
-  if (weekdays.length && !repeat_until)
-    return res.status(400).json({ error: 'Please choose an end date for the repeat.' })
 
   const { data: event, error } = await db
     .from('schedule_events')
     .insert({
       title: title.trim(),
       kind: kind || 'tuition',
-      subject: (subject || '').trim(),
       location: (location || '').trim(),
-      notes: (notes || '').trim(),
+      meet_link: (meet_link || '').trim(),
       starts_at,
       ends_at: ends_at || null,
       repeat_weekdays: weekdays,
-      repeat_until: weekdays.length ? repeat_until : null,
+      repeat_until: null, // rolling — no explicit end date
       created_by: req.user.id,
     })
     .select()
     .single()
   if (error) throw error
 
-  if (Array.isArray(attendees) && attendees.length) {
+  // Attendees are set by assigning one or more groups.
+  if (Array.isArray(groupIds) && groupIds.length) {
     await db
-      .from('schedule_attendees')
-      .insert(attendees.map((sid) => ({ event_id: event.id, student_id: sid })))
+      .from('schedule_event_groups')
+      .insert(groupIds.map((gid) => ({ event_id: event.id, group_id: gid })))
   }
   res.json(event)
 }))

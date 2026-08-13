@@ -119,27 +119,37 @@ create table if not exists public.schedule_events (
                  check (kind in ('tuition', 'meeting', 'exam', 'other')),
   subject      text default '',
   location     text default '',
+  meet_link    text default '',   -- optional online meeting link (Zoom/Meet/…)
   notes        text default '',
   starts_at    timestamptz not null,
   ends_at      timestamptz,
-  -- Recurrence: a weekly rule. repeat_weekdays holds ISO weekday numbers
-  -- (1=Mon … 7=Sun). Empty/null = one-off event on starts_at. repeat_until is
-  -- the last date (inclusive) the series recurs. starts_at/ends_at carry the
-  -- time-of-day for every occurrence.
+  -- Recurrence: weekly rule. repeat_weekdays holds ISO weekday numbers
+  -- (1=Mon … 7=Sun). Empty = one-off on starts_at. When set, the event rolls
+  -- forward automatically (the API expands occurrences a few months ahead), so
+  -- no explicit end date is needed. starts_at/ends_at carry the time-of-day.
   repeat_weekdays  int[] default '{}',
-  repeat_until     timestamptz,
+  repeat_until     timestamptz,   -- legacy/optional; unused by the current UI
   created_by   uuid references public.app_users(id) on delete set null,
   created_at   timestamptz not null default now()
 );
 
--- Add recurrence columns if this table already existed.
+-- Add columns if this table already existed.
 alter table public.schedule_events add column if not exists repeat_weekdays int[] default '{}';
 alter table public.schedule_events add column if not exists repeat_until timestamptz;
+alter table public.schedule_events add column if not exists meet_link text default '';
 
+-- Attendees are attached individually (kept for back-compat) …
 create table if not exists public.schedule_attendees (
   event_id    uuid not null references public.schedule_events(id) on delete cascade,
   student_id  uuid not null references public.app_users(id) on delete cascade,
   primary key (event_id, student_id)
+);
+
+-- … and by group. An event assigned to a group includes everyone in it.
+create table if not exists public.schedule_event_groups (
+  event_id    uuid not null references public.schedule_events(id) on delete cascade,
+  group_id    uuid not null references public.student_groups(id) on delete cascade,
+  primary key (event_id, group_id)
 );
 
 -- ─────────────────────────────────────────────────────────────────────────
