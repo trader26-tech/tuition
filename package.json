@@ -4,7 +4,7 @@
   "description": "Tuition center dashboard: assignments, document annotation grading, and scheduling. Powered by Supabase, optimized for Railway.",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "dev": "vite",

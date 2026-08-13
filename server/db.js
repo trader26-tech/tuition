@@ -16,10 +16,21 @@ if (!dbReady) {
   )
 }
 
-export const db = dbReady
-  ? createClient(url, serviceKey, {
+// This app only uses the database + storage — never Supabase Realtime. On older
+// Node versions the client's realtime setup can throw ("native WebSocket not
+// found"). We don't need it at all, so we keep the client construction guarded
+// and realtime disabled.
+export const db = (() => {
+  if (!dbReady) return null
+  try {
+    return createClient(url, serviceKey, {
       auth: { persistSession: false, autoRefreshToken: false },
+      realtime: { params: {} }, // we never subscribe; keep it inert
     })
-  : null
+  } catch (e) {
+    console.error('[db] Failed to create Supabase client:', e.message)
+    return null
+  }
+})()
 
 export const BUCKET = 'submissions'
