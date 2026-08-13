@@ -15,34 +15,152 @@ const wrap = (fn) => (req, res) =>
     res.status(500).json({ error: e.message || 'Server error' })
   })
 
-/* ─────────────── USERS ─────────────── */
-// List students (teacher only) — used by the schedule attendee picker.
+/* ─────────────── USERS / STUDENTS ─────────────── */
+// List students with their properties (teacher only).
 router.get('/users/students', requireTeacher, wrap(async (_req, res) => {
   const { data } = await db
     .from('app_users')
-    .select('id, full_name')
+    .select('id, full_name, username, grade, school')
     .eq('role', 'student')
     .order('full_name')
   res.json(data || [])
 }))
 
+// Update a student's properties (class/grade, school) or display name.
+router.patch('/users/students/:id', requireTeacher, wrap(async (req, res) => {
+  const { grade, school, full_name } = req.body || {}
+  const patch = {}
+  if (grade !== undefined) patch.grade = String(grade).trim()
+  if (school !== undefined) patch.school = String(school).trim()
+  if (full_name !== undefined && String(full_name).trim())
+    patch.full_name = String(full_name).trim()
+
+  const { data, error } = await db
+    .from('app_users')
+    .update(patch)
+    .eq('id', req.params.id)
+    .eq('role', 'student')
+    .select('id, full_name, username, grade, school')
+    .single()
+  if (error) throw error
+  res.json(data)
+}))
+
+/* ─────────────── GROUPS ─────────────── */
+// List groups with their members (teacher only).
+router.get('/groups', requireTeacher, wrap(async (_req, res) => {
+  const { data: groups } = await db
+    .from('student_groups')
+    .select('*')
+    .order('created_at', { ascending: true })
+  const { data: members } = await db
+    .from('group_members')
+    .select('group_id, student:student_id(id, full_name, grade, school)')
+
+  const byGroup = {}
+  ;(members || []).forEach((m) => {
+    byGroup[m.group_id] = byGroup[m.group_id] || []
+    if (m.student) byGroup[m.group_id].push(m.student)
+  })
+  res.json((groups || []).map((g) => ({ ...g, members: byGroup[g.id] || [] })))
+}))
+
+router.post('/groups', requireTeacher, wrap(async (req, res) => {
+  const { name, studentIds } = req.body || {}
+  if (!name?.trim()) return res.status(400).json({ error: 'Group name is required.' })
+  const { data: group, error } = await db
+    .from('student_groups')
+    .insert({ name: name.trim(), created_by: req.user.id })
+    .select()
+    .single()
+  if (error) throw error
+  if (Array.isArray(studentIds) && studentIds.length) {
+    await db
+      .from('group_members')
+      .insert(studentIds.map((sid) => ({ group_id: group.id, student_id: sid })))
+  }
+  res.json(group)
+}))
+
+// Replace a group's members (and optionally rename it).
+router.patch('/groups/:id', requireTeacher, wrap(async (req, res) => {
+  const { name, studentIds } = req.body || {}
+  if (name !== undefined && name.trim())
+    await db.from('student_groups').update({ name: name.trim() }).eq('id', req.params.id)
+  if (Array.isArray(studentIds)) {
+    await db.from('group_members').delete().eq('group_id', req.params.id)
+    if (studentIds.length)
+      await db
+        .from('group_members')
+        .insert(studentIds.map((sid) => ({ group_id: req.params.id, student_id: sid })))
+  }
+  res.json({ ok: true })
+}))
+
+router.delete('/groups/:id', requireTeacher, wrap(async (req, res) => {
+  await db.from('student_groups').delete().eq('id', req.params.id)
+  res.json({ ok: true })
+}))
+
 /* ─────────────── ASSIGNMENTS ─────────────── */
-router.get('/assignments', wrap(async (_req, res) => {
+
+// Returns the set of assignment ids a given student is allowed to see:
+// an assignment with NO targets is visible to everyone; otherwise the student
+// must be targeted directly or belong to a targeted group.
+async function allowedAssignmentIdsForStudent(studentId) {
+  const [{ data: allTargets }, { data: myGroups }] = await Promise.all([
+    db.from('assignment_targets').select('assignment_id, student_id, group_id'),
+    db.from('group_members').select('group_id').eq('student_id', studentId),
+  ])
+  const targets = allTargets || []
+  const myGroupIds = new Set((myGroups || []).map((g) => g.group_id))
+
+  const targetedAssignments = new Set(targets.map((t) => t.assignment_id))
+  const visible = new Set()
+  for (const t of targets) {
+    if (t.student_id === studentId) visible.add(t.assignment_id)
+    if (t.group_id && myGroupIds.has(t.group_id)) visible.add(t.assignment_id)
+  }
+  // untargeted assignments are visible to everyone
+  return { targetedAssignments, visible }
+}
+
+router.get('/assignments', wrap(async (req, res) => {
   const { data } = await db
     .from('assignments')
     .select('*')
     .order('created_at', { ascending: false })
-  res.json(data || [])
+  let list = data || []
+
+  if (req.user.role !== 'teacher') {
+    const { targetedAssignments, visible } = await allowedAssignmentIdsForStudent(req.user.id)
+    list = list.filter((a) => !targetedAssignments.has(a.id) || visible.has(a.id))
+  }
+  res.json(list)
 }))
 
 router.get('/assignments/:id', wrap(async (req, res) => {
   const { data } = await db.from('assignments').select('*').eq('id', req.params.id).maybeSingle()
   if (!data) return res.status(404).json({ error: 'Assignment not found.' })
+
+  if (req.user.role !== 'teacher') {
+    const { targetedAssignments, visible } = await allowedAssignmentIdsForStudent(req.user.id)
+    if (targetedAssignments.has(data.id) && !visible.has(data.id))
+      return res.status(403).json({ error: 'This assignment is not for you.' })
+  } else {
+    // Include the current targets so the teacher can see who it's for.
+    const { data: targets } = await db
+      .from('assignment_targets')
+      .select('student_id, group_id')
+      .eq('assignment_id', data.id)
+    data.targets = targets || []
+  }
   res.json(data)
 }))
 
 router.post('/assignments', requireTeacher, wrap(async (req, res) => {
-  const { title, subject, description, due_date, max_score } = req.body || {}
+  const { title, subject, description, due_date, max_score, studentIds, groupIds } =
+    req.body || {}
   if (!title?.trim()) return res.status(400).json({ error: 'Title is required.' })
   const { data, error } = await db
     .from('assignments')
@@ -57,6 +175,20 @@ router.post('/assignments', requireTeacher, wrap(async (req, res) => {
     .select()
     .single()
   if (error) throw error
+
+  // Optional targeting. No rows => visible to everyone.
+  const targetRows = [
+    ...(Array.isArray(studentIds) ? studentIds : []).map((sid) => ({
+      assignment_id: data.id,
+      student_id: sid,
+    })),
+    ...(Array.isArray(groupIds) ? groupIds : []).map((gid) => ({
+      assignment_id: data.id,
+      group_id: gid,
+    })),
+  ]
+  if (targetRows.length) await db.from('assignment_targets').insert(targetRows)
+
   res.json(data)
 }))
 

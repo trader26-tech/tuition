@@ -20,6 +20,8 @@ export default function AppLayout() {
     { to: '/', label: 'Dashboard', icon: Icon.Dashboard, end: true },
     { to: '/assignments', label: 'Assignments', icon: Icon.Book },
     { to: '/schedule', label: 'Schedule', icon: Icon.Calendar },
+    // Students management is teacher-only.
+    ...(isTeacher ? [{ to: '/students', label: 'Students', icon: Icon.Users }] : []),
   ]
 
   const SidebarContent = () => (

@@ -28,6 +28,12 @@ async function request(method, url, body, isForm = false) {
   const text = await res.text()
   const data = text ? JSON.parse(text) : null
   if (!res.ok) {
+    // A 401 means our token is invalid/stale — drop it and send the user back
+    // to the login screen so they get a fresh, valid session.
+    if (res.status === 401 && !url.startsWith('/auth/')) {
+      setToken('')
+      if (typeof window !== 'undefined') window.location.reload()
+    }
     const err = new Error(data?.error || `Request failed (${res.status})`)
     err.status = res.status
     throw err

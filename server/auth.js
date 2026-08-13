@@ -26,13 +26,29 @@ function signToken(user) {
   )
 }
 
-// Express middleware: verify the Bearer token and attach req.user.
-export function requireAuth(req, res, next) {
+// Express middleware: verify the Bearer token and attach req.user. We also
+// confirm the user still exists in app_users, so a valid-but-stale token (e.g.
+// issued before the schema was re-created) can't be used to write rows with a
+// dangling created_by/student_id. In that case we ask the user to sign in again.
+export async function requireAuth(req, res, next) {
   const header = req.headers.authorization || ''
   const token = header.startsWith('Bearer ') ? header.slice(7) : null
   if (!token) return res.status(401).json({ error: 'Not signed in.' })
   try {
     const payload = jwt.verify(token, SECRET)
+    if (dbReady) {
+      const { data: exists } = await db
+        .from('app_users')
+        .select('id, role, full_name, username')
+        .eq('id', payload.sub)
+        .maybeSingle()
+      if (!exists)
+        return res
+          .status(401)
+          .json({ error: 'Your account was reset. Please sign in again.' })
+      req.user = exists // use the fresh row (role/name may have changed)
+      return next()
+    }
     req.user = { id: payload.sub, role: payload.role, full_name: payload.name, username: payload.username }
     next()
   } catch {

@@ -23,8 +23,14 @@ create table if not exists public.app_users (
   full_name      text not null,
   password_hash  text not null,
   role           text not null default 'student' check (role in ('teacher', 'student')),
+  grade          text default '',   -- class the student studies in, e.g. "Class 10"
+  school         text default '',   -- school name
   created_at     timestamptz not null default now()
 );
+
+-- Add the student-property columns if this table already existed.
+alter table public.app_users add column if not exists grade text default '';
+alter table public.app_users add column if not exists school text default '';
 
 -- ─────────────────────────────────────────────────────────────────────────
 --  ASSIGNMENTS  (created by the teacher)
@@ -60,6 +66,39 @@ create table if not exists public.submissions (
   graded_at      timestamptz,
   unique (assignment_id, student_id)
 );
+
+-- ─────────────────────────────────────────────────────────────────────────
+--  GROUPS  (teacher-created groups of students, e.g. "Class 10 - DAV")
+-- ─────────────────────────────────────────────────────────────────────────
+create table if not exists public.student_groups (
+  id           uuid primary key default gen_random_uuid(),
+  name         text not null,
+  created_by   uuid references public.app_users(id) on delete set null,
+  created_at   timestamptz not null default now()
+);
+
+create table if not exists public.group_members (
+  group_id     uuid not null references public.student_groups(id) on delete cascade,
+  student_id   uuid not null references public.app_users(id) on delete cascade,
+  primary key (group_id, student_id)
+);
+
+-- ─────────────────────────────────────────────────────────────────────────
+--  ASSIGNMENT TARGETS  (who an assignment is for)
+--  If an assignment has NO target rows, it is visible to everyone (back-compat).
+--  Otherwise a student sees it only if they are targeted directly, or via a
+--  group they belong to.
+-- ─────────────────────────────────────────────────────────────────────────
+create table if not exists public.assignment_targets (
+  id            uuid primary key default gen_random_uuid(),
+  assignment_id uuid not null references public.assignments(id) on delete cascade,
+  student_id    uuid references public.app_users(id) on delete cascade,
+  group_id      uuid references public.student_groups(id) on delete cascade,
+  check (student_id is not null or group_id is not null)
+);
+
+create index if not exists assignment_targets_assignment_idx
+  on public.assignment_targets (assignment_id);
 
 -- ─────────────────────────────────────────────────────────────────────────
 --  SCHEDULE  (tuition sessions & meetings — who / when)

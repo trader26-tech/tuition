@@ -150,13 +150,46 @@ function CreateAssignmentModal({ open, onClose, onCreated }) {
     due_date: toLocalInput(),
     max_score: 100,
   })
+  const [audience, setAudience] = useState('everyone') // 'everyone' | 'targeted'
+  const [groups, setGroups] = useState([])
+  const [students, setStudents] = useState([])
+  const [pickedGroups, setPickedGroups] = useState(new Set())
+  const [pickedStudents, setPickedStudents] = useState(new Set())
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }))
 
+  // Load groups + students once the modal opens.
+  useEffect(() => {
+    if (!open) return
+    Promise.all([api.get('/groups'), api.get('/users/students')])
+      .then(([g, s]) => {
+        setGroups(g || [])
+        setStudents(s || [])
+      })
+      .catch(() => {})
+  }, [open])
+
+  const toggle = (setFn) => (id) =>
+    setFn((prev) => {
+      const n = new Set(prev)
+      n.has(id) ? n.delete(id) : n.add(id)
+      return n
+    })
+
+  const reset = () => {
+    setForm({ title: '', subject: '', description: '', due_date: toLocalInput(), max_score: 100 })
+    setAudience('everyone')
+    setPickedGroups(new Set())
+    setPickedStudents(new Set())
+  }
+
   const submit = async (e) => {
     e.preventDefault()
+    if (audience === 'targeted' && pickedGroups.size === 0 && pickedStudents.size === 0) {
+      return setError('Pick at least one group or student — or choose “Everyone”.')
+    }
     setBusy(true)
     setError('')
     try {
@@ -166,8 +199,10 @@ function CreateAssignmentModal({ open, onClose, onCreated }) {
         description: form.description,
         due_date: form.due_date ? new Date(form.due_date).toISOString() : null,
         max_score: form.max_score,
+        groupIds: audience === 'targeted' ? [...pickedGroups] : [],
+        studentIds: audience === 'targeted' ? [...pickedStudents] : [],
       })
-      setForm({ title: '', subject: '', description: '', due_date: toLocalInput(), max_score: 100 })
+      reset()
       onCreated()
     } catch (err) {
       setError(err.message)
@@ -177,7 +212,7 @@ function CreateAssignmentModal({ open, onClose, onCreated }) {
   }
 
   return (
-    <Modal open={open} onClose={onClose} title="New assignment">
+    <Modal open={open} onClose={onClose} title="New assignment" size="lg">
       <form onSubmit={submit} className="space-y-4">
         <div>
           <label className="label">Title</label>
@@ -199,8 +234,90 @@ function CreateAssignmentModal({ open, onClose, onCreated }) {
         </div>
         <div>
           <label className="label">Instructions (optional)</label>
-          <textarea className="input min-h-[90px]" value={form.description} onChange={set('description')} placeholder="What should students do? Any notes…" />
+          <textarea className="input min-h-[80px]" value={form.description} onChange={set('description')} placeholder="What should students do? Any notes…" />
         </div>
+
+        {/* Who is this for? */}
+        <div>
+          <label className="label">Send to</label>
+          <div className="mb-2 grid grid-cols-2 gap-2">
+            {[
+              { v: 'everyone', label: 'Everyone' },
+              { v: 'targeted', label: 'Specific groups / students' },
+            ].map((o) => (
+              <button
+                type="button"
+                key={o.v}
+                onClick={() => setAudience(o.v)}
+                className={`rounded-lg border px-3 py-2 text-sm font-medium transition ${
+                  audience === o.v
+                    ? 'border-brand-500 bg-brand-50 text-brand-700'
+                    : 'border-ink-200 text-ink-600 hover:bg-ink-50'
+                }`}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+
+          {audience === 'targeted' && (
+            <div className="space-y-3 rounded-lg border border-ink-200 p-3">
+              {groups.length > 0 && (
+                <div>
+                  <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-ink-500">Groups</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {groups.map((g) => {
+                      const on = pickedGroups.has(g.id)
+                      return (
+                        <button
+                          type="button"
+                          key={g.id}
+                          onClick={() => toggle(setPickedGroups)(g.id)}
+                          className={`badge border transition ${
+                            on
+                              ? 'border-brand-500 bg-brand-600 text-white'
+                              : 'border-ink-200 bg-white text-ink-600 hover:bg-ink-50'
+                          }`}
+                        >
+                          {g.name} · {g.members.length}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-ink-500">
+                  Individual students
+                </p>
+                {students.length === 0 ? (
+                  <p className="text-sm text-ink-400">No students have signed up yet.</p>
+                ) : (
+                  <div className="max-h-40 space-y-1 overflow-y-auto">
+                    {students.map((s) => (
+                      <label key={s.id} className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-sm hover:bg-ink-50">
+                        <input
+                          type="checkbox"
+                          className="accent-brand-600"
+                          checked={pickedStudents.has(s.id)}
+                          onChange={() => toggle(setPickedStudents)(s.id)}
+                        />
+                        <span className="font-medium text-ink-800">{s.full_name}</span>
+                        {(s.grade || s.school) && (
+                          <span className="text-xs text-ink-400">
+                            {[s.grade, s.school].filter(Boolean).join(' · ')}
+                          </span>
+                        )}
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
         {error && <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" className="btn-secondary" onClick={onClose}>Cancel</button>

@@ -4,7 +4,8 @@ import { useAuth } from '../context/AuthContext'
 import { Icon } from '../components/icons'
 import { Spinner, Badge, Modal, EmptyState } from '../components/ui'
 import { fmtTime, toLocalInput } from '../lib/format'
-import { format, isToday, isTomorrow, isPast } from 'date-fns'
+import { format, isToday, isTomorrow, isPast, startOfWeek, endOfWeek, addWeeks, isSameWeek } from 'date-fns'
+import WeekGrid from '../components/WeekGrid'
 
 const KIND_META = {
   tuition: { label: 'Tuition', tone: 'blue', dot: 'bg-brand-500' },
@@ -25,6 +26,9 @@ export default function Schedule() {
   const [events, setEvents] = useState([])
   const [showCreate, setShowCreate] = useState(false)
   const [filter, setFilter] = useState('upcoming')
+  const [view, setView] = useState('week') // 'week' | 'list'
+  const [weekAnchor, setWeekAnchor] = useState(new Date())
+  const [selected, setSelected] = useState(null) // event opened from the grid
 
   const load = async () => {
     setLoading(true)
@@ -68,14 +72,14 @@ export default function Schedule() {
         <div className="flex items-center gap-2">
           <div className="flex rounded-lg border border-ink-200 bg-white p-0.5 text-sm">
             {[
-              { v: 'upcoming', label: 'Upcoming' },
-              { v: 'all', label: 'All' },
+              { v: 'week', label: 'Week' },
+              { v: 'list', label: 'List' },
             ].map((o) => (
               <button
                 key={o.v}
-                onClick={() => setFilter(o.v)}
+                onClick={() => setView(o.v)}
                 className={`rounded-md px-3 py-1.5 font-medium transition ${
-                  filter === o.v ? 'bg-brand-600 text-white' : 'text-ink-600 hover:bg-ink-50'
+                  view === o.v ? 'bg-brand-600 text-white' : 'text-ink-600 hover:bg-ink-50'
                 }`}
               >
                 {o.label}
@@ -90,10 +94,66 @@ export default function Schedule() {
         </div>
       </div>
 
+      {/* View-specific controls */}
+      {view === 'week' ? (
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1">
+            <button className="btn-secondary px-2" onClick={() => setWeekAnchor((d) => addWeeks(d, -1))} aria-label="Previous week">
+              <Icon.ChevronLeft width={18} />
+            </button>
+            <button className="btn-secondary px-2 rotate-180" onClick={() => setWeekAnchor((d) => addWeeks(d, 1))} aria-label="Next week">
+              <Icon.ChevronLeft width={18} />
+            </button>
+            {!isSameWeek(weekAnchor, new Date(), { weekStartsOn: 1 }) && (
+              <button className="btn-ghost" onClick={() => setWeekAnchor(new Date())}>Today</button>
+            )}
+          </div>
+          <p className="text-sm font-medium text-ink-600">
+            {format(startOfWeek(weekAnchor, { weekStartsOn: 1 }), 'd MMM')} –{' '}
+            {format(endOfWeek(weekAnchor, { weekStartsOn: 1 }), 'd MMM yyyy')}
+          </p>
+        </div>
+      ) : (
+        <div className="flex rounded-lg border border-ink-200 bg-white p-0.5 text-sm w-fit">
+          {[
+            { v: 'upcoming', label: 'Upcoming' },
+            { v: 'all', label: 'All' },
+          ].map((o) => (
+            <button
+              key={o.v}
+              onClick={() => setFilter(o.v)}
+              className={`rounded-md px-3 py-1.5 font-medium transition ${
+                filter === o.v ? 'bg-brand-600 text-white' : 'text-ink-600 hover:bg-ink-50'
+              }`}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {loading ? (
         <div className="flex justify-center py-20 text-brand-600">
           <Spinner className="h-6 w-6" />
         </div>
+      ) : view === 'week' ? (
+        <>
+          {events.length === 0 && (
+            <EmptyState icon={<Icon.Calendar width={22} />} title="No events yet">
+              {isTeacher
+                ? 'Add a tuition and it will appear on this weekly timetable.'
+                : 'When your teacher schedules a session for you, it appears here.'}
+            </EmptyState>
+          )}
+          <WeekGrid anchor={weekAnchor} events={events} onSelect={setSelected} />
+          <div className="flex flex-wrap gap-3 text-xs text-ink-500">
+            {Object.entries(KIND_META).map(([k, m]) => (
+              <span key={k} className="inline-flex items-center gap-1.5">
+                <span className={`h-2.5 w-2.5 rounded-full ${m.dot}`} /> {m.label}
+              </span>
+            ))}
+          </div>
+        </>
       ) : groups.length === 0 ? (
         <EmptyState
           icon={<Icon.Calendar width={22} />}
@@ -131,6 +191,47 @@ export default function Schedule() {
           ))}
         </div>
       )}
+
+      {/* Event details popup (from clicking a grid block) */}
+      <Modal open={!!selected} onClose={() => setSelected(null)} title={selected?.title}>
+        {selected && (
+          <div className="space-y-3 text-sm">
+            <div className="flex flex-wrap gap-2">
+              <Badge tone={(KIND_META[selected.kind] || KIND_META.other).tone}>
+                {(KIND_META[selected.kind] || KIND_META.other).label}
+              </Badge>
+              <span className="text-ink-500">
+                {format(new Date(selected.starts_at), 'EEE, d MMM · h:mm a')}
+                {selected.ends_at ? ` – ${fmtTime(selected.ends_at)}` : ''}
+              </span>
+            </div>
+            {selected.subject && <p><span className="font-medium">Subject:</span> {selected.subject}</p>}
+            {selected.location && <p><span className="font-medium">Location:</span> {selected.location}</p>}
+            {selected.notes && <p className="whitespace-pre-wrap text-ink-600">{selected.notes}</p>}
+            {selected.attendees?.length > 0 && (
+              <p className="text-ink-500">
+                <span className="font-medium text-ink-700">Students: </span>
+                {selected.attendees.map((a) => a.name).join(', ')}
+              </p>
+            )}
+            {isTeacher && (
+              <div className="flex justify-end pt-2">
+                <button
+                  className="btn-danger"
+                  onClick={async () => {
+                    if (!confirm('Delete this event?')) return
+                    await api.del(`/schedule/${selected.id}`)
+                    setSelected(null)
+                    load()
+                  }}
+                >
+                  <Icon.Trash width={16} /> Delete
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
 
       <CreateEventModal
         open={showCreate}

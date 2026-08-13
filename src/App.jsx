@@ -8,6 +8,7 @@ import Assignments from './pages/Assignments'
 import AssignmentDetail from './pages/AssignmentDetail'
 import GradePage from './pages/GradePage'
 import Schedule from './pages/Schedule'
+import Students from './pages/Students'
 
 export default function App() {
   const { loading, user } = useAuth()
@@ -23,6 +24,7 @@ export default function App() {
         <Route path="assignments/:id" element={<AssignmentDetail />} />
         <Route path="assignments/:id/grade/:submissionId" element={<GradePage />} />
         <Route path="schedule" element={<Schedule />} />
+        <Route path="students" element={<Students />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
