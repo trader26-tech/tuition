@@ -110,6 +110,11 @@ export default function Assignments() {
                 {a.description && (
                   <p className="mt-2 line-clamp-2 text-sm text-ink-500">{a.description}</p>
                 )}
+                {a.attachment_path && (
+                  <p className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-brand-600">
+                    <Icon.File width={13} /> Question paper attached
+                  </p>
+                )}
                 <div className="mt-4 flex items-center justify-between border-t border-ink-100 pt-3 text-xs text-ink-400">
                   <span>added {relative(a.created_at)}</span>
                   {isTeacher ? (
@@ -155,6 +160,7 @@ function CreateAssignmentModal({ open, onClose, onCreated }) {
   const [students, setStudents] = useState([])
   const [pickedGroups, setPickedGroups] = useState(new Set())
   const [pickedStudents, setPickedStudents] = useState(new Set())
+  const [attachment, setAttachment] = useState(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
@@ -183,6 +189,7 @@ function CreateAssignmentModal({ open, onClose, onCreated }) {
     setAudience('everyone')
     setPickedGroups(new Set())
     setPickedStudents(new Set())
+    setAttachment(null)
   }
 
   const submit = async (e) => {
@@ -193,15 +200,18 @@ function CreateAssignmentModal({ open, onClose, onCreated }) {
     setBusy(true)
     setError('')
     try {
-      await api.post('/assignments', {
-        title: form.title,
-        subject: form.subject,
-        description: form.description,
-        due_date: form.due_date ? new Date(form.due_date).toISOString() : null,
-        max_score: form.max_score,
-        groupIds: audience === 'targeted' ? [...pickedGroups] : [],
-        studentIds: audience === 'targeted' ? [...pickedStudents] : [],
-      })
+      // Send as multipart so we can include the optional attachment file.
+      const fd = new FormData()
+      fd.append('title', form.title)
+      fd.append('subject', form.subject)
+      fd.append('description', form.description)
+      if (form.due_date) fd.append('due_date', new Date(form.due_date).toISOString())
+      fd.append('max_score', String(form.max_score))
+      fd.append('groupIds', JSON.stringify(audience === 'targeted' ? [...pickedGroups] : []))
+      fd.append('studentIds', JSON.stringify(audience === 'targeted' ? [...pickedStudents] : []))
+      if (attachment) fd.append('attachment', attachment)
+
+      await api.upload('/assignments', fd)
       reset()
       onCreated()
     } catch (err) {
@@ -235,6 +245,36 @@ function CreateAssignmentModal({ open, onClose, onCreated }) {
         <div>
           <label className="label">Instructions (optional)</label>
           <textarea className="input min-h-[80px]" value={form.description} onChange={set('description')} placeholder="What should students do? Any notes…" />
+        </div>
+
+        {/* Attachment (question paper / worksheet) */}
+        <div>
+          <label className="label">Question paper / worksheet (optional)</label>
+          {attachment ? (
+            <div className="flex items-center gap-3 rounded-lg border border-ink-200 bg-ink-50 px-3 py-2">
+              <Icon.File width={18} className="text-brand-600" />
+              <span className="min-w-0 flex-1 truncate text-sm text-ink-700">{attachment.name}</span>
+              <button
+                type="button"
+                className="btn-ghost px-2 text-ink-400 hover:text-red-600"
+                onClick={() => setAttachment(null)}
+                aria-label="Remove file"
+              >
+                <Icon.Trash width={16} />
+              </button>
+            </div>
+          ) : (
+            <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border-2 border-dashed border-ink-200 px-4 py-4 text-sm text-ink-500 transition hover:border-brand-300 hover:bg-brand-50/40">
+              <Icon.Upload width={18} />
+              Attach a PDF, image or document
+              <input
+                type="file"
+                accept=".pdf,image/*,.doc,.docx"
+                className="hidden"
+                onChange={(e) => setAttachment(e.target.files?.[0] || null)}
+              />
+            </label>
+          )}
         </div>
 
         {/* Who is this for? */}

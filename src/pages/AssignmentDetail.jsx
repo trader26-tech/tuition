@@ -87,6 +87,9 @@ export default function AssignmentDetail() {
             {assignment.description}
           </p>
         )}
+        {assignment.attachment_path && (
+          <AttachmentCard assignment={assignment} />
+        )}
       </div>
 
       {isTeacher ? (
@@ -94,6 +97,43 @@ export default function AssignmentDetail() {
       ) : (
         <StudentSubmission assignment={assignment} submission={mySubmission} onChanged={load} />
       )}
+    </div>
+  )
+}
+
+function AttachmentCard({ assignment }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  const open = async () => {
+    setBusy(true)
+    setError('')
+    try {
+      const { url } = await api.get(`/assignments/${assignment.id}/attachment-url`)
+      window.open(url, '_blank', 'noopener')
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="mt-4 flex items-center gap-3 rounded-lg border border-brand-100 bg-brand-50/60 p-3">
+      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-white text-brand-600">
+        <Icon.File width={20} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium text-ink-800">
+          {assignment.attachment_name || 'Question paper'}
+        </p>
+        <p className="text-xs text-ink-400">Attached by the teacher</p>
+      </div>
+      <button className="btn-secondary" onClick={open} disabled={busy}>
+        {busy ? <Spinner className="h-4 w-4" /> : <Icon.Download width={16} />}
+        Open
+      </button>
+      {error && <span className="text-xs text-red-600">{error}</span>}
     </div>
   )
 }

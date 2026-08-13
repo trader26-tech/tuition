@@ -158,10 +158,25 @@ router.get('/assignments/:id', wrap(async (req, res) => {
   res.json(data)
 }))
 
-router.post('/assignments', requireTeacher, wrap(async (req, res) => {
-  const { title, subject, description, due_date, max_score, studentIds, groupIds } =
-    req.body || {}
+// Accepts multipart/form-data so the teacher can attach a question paper.
+// Text fields come as strings; studentIds/groupIds arrive as JSON-encoded
+// strings (the frontend stringifies the arrays for the form).
+router.post('/assignments', requireTeacher, upload.single('attachment'), wrap(async (req, res) => {
+  const { title, subject, description, due_date, max_score } = req.body || {}
   if (!title?.trim()) return res.status(400).json({ error: 'Title is required.' })
+
+  const parseIds = (v) => {
+    if (!v) return []
+    try {
+      const arr = typeof v === 'string' ? JSON.parse(v) : v
+      return Array.isArray(arr) ? arr : []
+    } catch {
+      return []
+    }
+  }
+  const studentIds = parseIds(req.body.studentIds)
+  const groupIds = parseIds(req.body.groupIds)
+
   const { data, error } = await db
     .from('assignments')
     .insert({
@@ -176,29 +191,67 @@ router.post('/assignments', requireTeacher, wrap(async (req, res) => {
     .single()
   if (error) throw error
 
+  // Optional attachment (question paper / worksheet).
+  if (req.file) {
+    const safeName = req.file.originalname.replace(/[^\w.\-]+/g, '_')
+    const path = `assignments/${data.id}/${Date.now()}_${safeName}`
+    const { error: upErr } = await db.storage
+      .from(BUCKET)
+      .upload(path, req.file.buffer, { contentType: req.file.mimetype, upsert: true })
+    if (upErr) throw upErr
+    const { data: updated } = await db
+      .from('assignments')
+      .update({
+        attachment_path: path,
+        attachment_name: req.file.originalname,
+        attachment_type: req.file.mimetype,
+      })
+      .eq('id', data.id)
+      .select()
+      .single()
+    Object.assign(data, updated)
+  }
+
   // Optional targeting. No rows => visible to everyone.
   const targetRows = [
-    ...(Array.isArray(studentIds) ? studentIds : []).map((sid) => ({
-      assignment_id: data.id,
-      student_id: sid,
-    })),
-    ...(Array.isArray(groupIds) ? groupIds : []).map((gid) => ({
-      assignment_id: data.id,
-      group_id: gid,
-    })),
+    ...studentIds.map((sid) => ({ assignment_id: data.id, student_id: sid })),
+    ...groupIds.map((gid) => ({ assignment_id: data.id, group_id: gid })),
   ]
   if (targetRows.length) await db.from('assignment_targets').insert(targetRows)
 
   res.json(data)
 }))
 
+// Signed URL to view/download an assignment's attachment.
+router.get('/assignments/:id/attachment-url', wrap(async (req, res) => {
+  const { data: a } = await db
+    .from('assignments')
+    .select('id, attachment_path')
+    .eq('id', req.params.id)
+    .maybeSingle()
+  if (!a?.attachment_path) return res.status(404).json({ error: 'No attachment.' })
+
+  // Students may only access it if the assignment is visible to them.
+  if (req.user.role !== 'teacher') {
+    const { targetedAssignments, visible } = await allowedAssignmentIdsForStudent(req.user.id)
+    if (targetedAssignments.has(a.id) && !visible.has(a.id))
+      return res.status(403).json({ error: 'Not allowed.' })
+  }
+  const { data, error } = await db.storage.from(BUCKET).createSignedUrl(a.attachment_path, 3600)
+  if (error) throw error
+  res.json({ url: data.signedUrl })
+}))
+
 router.delete('/assignments/:id', requireTeacher, wrap(async (req, res) => {
-  // Remove stored files for this assignment's submissions first.
-  const { data: subs } = await db
-    .from('submissions')
-    .select('file_path')
-    .eq('assignment_id', req.params.id)
-  const paths = (subs || []).map((s) => s.file_path).filter(Boolean)
+  // Remove the attachment and all submission files for this assignment.
+  const [{ data: subs }, { data: a }] = await Promise.all([
+    db.from('submissions').select('file_path').eq('assignment_id', req.params.id),
+    db.from('assignments').select('attachment_path').eq('id', req.params.id).maybeSingle(),
+  ])
+  const paths = [
+    ...(subs || []).map((s) => s.file_path),
+    a?.attachment_path,
+  ].filter(Boolean)
   if (paths.length) await db.storage.from(BUCKET).remove(paths)
   await db.from('assignments').delete().eq('id', req.params.id)
   res.json({ ok: true })

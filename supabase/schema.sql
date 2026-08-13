@@ -42,9 +42,18 @@ create table if not exists public.assignments (
   subject      text default '',
   due_date     timestamptz,
   max_score    numeric default 100,
+  -- Optional attachment: the question paper / worksheet the teacher hands out.
+  attachment_path  text,
+  attachment_name  text,
+  attachment_type  text,
   created_by   uuid references public.app_users(id) on delete set null,
   created_at   timestamptz not null default now()
 );
+
+-- Add attachment columns if this table already existed.
+alter table public.assignments add column if not exists attachment_path text;
+alter table public.assignments add column if not exists attachment_name text;
+alter table public.assignments add column if not exists attachment_type text;
 
 -- ─────────────────────────────────────────────────────────────────────────
 --  SUBMISSIONS  (a student's uploaded answer for an assignment)
